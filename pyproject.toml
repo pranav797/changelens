@@ -1,0 +1,17 @@
+[project]
+name = "changelens"
+version = "0.1.0"
+description = "Predict what a code change could break: dependency-graph impact analysis served over MCP."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["mcp>=2.3,<3"]
+
+[project.scripts]
+changelens = "changelens.cli:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
