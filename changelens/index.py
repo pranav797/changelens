@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-CACHE_VERSION = 3  # bump whenever extract() output changes
+CACHE_VERSION = 4  # bump whenever extract() output changes
+TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 RACY_NS = 2_000_000_000  # like git: a file modified this close to the cache write may have changed unseen
 
 
@@ -147,6 +148,8 @@ def extract(f, source):
     skip = {node for name, node in nodes.items() if name != mod}
     own, fixtures, params, usefix = {}, {}, {}, {}
     test_file = is_test(f)
+    lines = source.decode("utf-8", "replace").splitlines() if test_file else []
+    tokens = {}  # test function -> identifiers in its source, strings included (for the text channel)
     for name, node in nodes.items():
         n, s, a, im = _scan(node, skip)
         own[name] = [sorted(n), sorted(s), sorted(a), im]
@@ -155,6 +158,8 @@ def extract(f, source):
         usefix[name] = _usefixtures(node)
         if isinstance(node, ast.ClassDef):
             continue
+        if node.name.startswith("test"):
+            tokens[name] = sorted(set(TOKEN_RE.findall("\n".join(lines[node.lineno - 1:node.end_lineno]))))
         params[name] = [p.arg for p in node.args.posonlyargs + node.args.args + node.args.kwonlyargs
                         if p.arg not in ("self", "cls")]
         for d in node.decorator_list:
@@ -163,7 +168,7 @@ def extract(f, source):
                 kw = {k.arg: k.value for k in call.keywords} if call else {}
                 fixtures[name] = [kw["name"].value if isinstance(kw.get("name"), ast.Constant) else node.name,
                                   isinstance(kw.get("autouse"), ast.Constant) and kw["autouse"].value is True]
-    return {"syms": syms, "own": own, "fixtures": fixtures, "params": params, "usefix": usefix}
+    return {"syms": syms, "own": own, "fixtures": fixtures, "params": params, "usefix": usefix, "tokens": tokens}
 
 
 def _alias_map(f, mod, records):
@@ -221,6 +226,9 @@ class Index:
         for f, fx in facts.items():
             self._link(f, fx)
         self._link_fixtures(facts)
+        self.fixtures = {name for fx in facts.values() for name in fx["fixtures"] if name in self.symbols}
+        self.test_tokens = {name: set(tok) for fx in facts.values() for name, tok in fx["tokens"].items()
+                            if name in self.symbols}
         for src, targets in self.refs.items():
             for t in targets:
                 self.dependents.setdefault(t, set()).add(src)

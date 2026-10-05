@@ -113,7 +113,7 @@ def test_module_level_changes(repo):
     assert r["risk"]["breaks"] == [{"symbol": "tests.test_money", "file": "tests/test_money.py",
                                     "reasons": ["imports from pkg.money: pkg/money.py was deleted"],
                                     "causes": ["pkg.money"]}]
-    assert r["tests"] == [{"id": "tests/test_money.py", "depth": 0, "why": ["tests.test_money"]}]
+    assert r["tests"] == [{"id": "tests/test_money.py", "depth": 0, "why": ["tests.test_money"], "channel": "graph"}]
 
 
 def test_parse_diff():
@@ -227,3 +227,12 @@ def test_pytest_fixtures(repo):
     assert "tests/sub/test_override.py::test_override" not in calc_tests  # nearer conftest overrides calc
     assert "tests/test_fx.py::test_named" in ids("pkg.core.add")  # @pytest.fixture(name=...)
     assert "tests/sub/test_override.py::test_override" in ids("setup_env")  # autouse reaches every test in scope
+
+
+def test_text_channel(repo):
+    # shout() is only reached through string dispatch: no graph edge, but the test's source names it
+    (repo / "pkg/ops.py").write_text("def shout(s):\n    return s.upper()\n\n\ndef run(name, s):\n    return globals()[name](s)\n")
+    (repo / "tests/test_ops.py").write_text("from pkg.ops import run\n\n\ndef test_shout():\n    assert run('shout', 'a') == 'A'\n")
+    tests = server.find_related_tests(str(repo), symbol="pkg.ops.shout")["tests"]
+    assert tests == [{"id": "tests/test_ops.py::test_shout", "depth": 3, "why": ["pkg.ops.shout", "tests.test_ops.test_shout"],
+                      "channel": "text", "matched": "shout"}]
