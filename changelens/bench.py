@@ -110,8 +110,11 @@ def predictors(index, root, sym, test_texts):
     word = re.compile(rf"\b{re.escape(name)}\b")
     importers = sorted(f for f, syms in index.by_file.items() if is_test(f) and any(
         t == module or t.startswith(module + ".") for t in index.aliases.get(syms[0].name, {}).values()))
+    changelens = [t["id"] for t in analyze(index, git_diff(root, "HEAD"), limit=10**6)["tests"]]
     return {
-        "changelens": [t["id"] for t in analyze(index, git_diff(root, "HEAD"), limit=10**6)["tests"]],
+        "changelens": changelens,
+        # same ranking collapsed to test files: the like-for-like comparison with the file-level baselines
+        "changelens-files": list(dict.fromkeys(t.split("::")[0] for t in changelens)),
         "grep": sorted(f for f, text in test_texts.items() if word.search(text)),
         "importers": importers,
     }
