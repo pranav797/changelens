@@ -39,8 +39,25 @@ def main(argv=None):
     u.add_argument("--repo", default=".")
     u.add_argument("--port", type=int, default=8765)
     u.add_argument("--no-open", action="store_true", help="don't open a browser")
+    b = sub.add_parser("bench", help="mutation benchmark: recall of predicted tests vs grep/importer baselines")
+    b.add_argument("--repo", default=".")
+    b.add_argument("--test-cmd", default="python -m pytest", help="how to run the repo's tests (pytest)")
+    b.add_argument("-n", type=int, default=30, help="covered mutants to score")
+    b.add_argument("--seed", type=int, default=0)
+    b.add_argument("--out", help="also write full per-mutant results as JSON here")
     args = p.parse_args(argv)
 
+    if args.cmd == "bench":
+        from .bench import bench, report
+        try:
+            result = bench(args.repo, args.test_cmd, args.n, args.seed)
+        except ValueError as e:
+            sys.exit(f"changelens: {e}")
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as fh:
+                json.dump(result, fh, indent=2)
+        print(report(result))
+        return
     if args.cmd == "mcp":
         server.mcp.run()
         return
