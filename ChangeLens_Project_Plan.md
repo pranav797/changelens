@@ -71,6 +71,7 @@ The structural channel ships first because it is exact where it applies. Everyth
 - **Shipped: name-affinity ranking.** Tests named after what changed rank higher (click recall@10: 44% → 57%).
 - **Not shipped: embeddings.** A real local embedding model (model2vec `potion-base-8M`) and TF-IDF re-ranking were evaluated on both repos and added only 1–3 points of recall@10, within noise for 40 mutants. A ~30MB model plus new dependencies isn't justified by that, so per this gate they stay out. The evaluation scripts are reproducible from the benchmark JSON.
 - **Not built: a cross-encoder reranker or a change-type classifier.** Ranking gains came from cheaper signals, and change types stay rule-based (no labelled data).
+- **Tried for precision and rejected:** a logistic-regression ranker over 7 features, fitted on benchmark failures, lost 10–11 points of recall@10 on held-out repos; hub pruning collapsed recall. The precision lever that works is **runtime coverage** (optional `changelens coverage`): recall@10 jinja 71% → 96%, click 56% → 90%.
 
 All analysis runs locally, so ChangeLens works on private repositories.
 
@@ -114,11 +115,13 @@ Vertical slice first, so every later piece is measured against something that wo
 1. **Structural slice** ✅ — ast indexer, reference graph, diff → changed symbols → reverse BFS, affected files/tests with "why" chains.
 2. **Risk scorer** ✅ — five signals (incl. breaks) plus change-type rules.
 3. **Interfaces** ✅ — MCP server and CLI exposing all six tools (§7.1).
-4. **Benchmark** ✅ — `changelens bench`: mutation ground truth, grep and importer baselines, results in [docs/benchmark.md](docs/benchmark.md).
+4. **Benchmark** ✅ — `changelens bench`: mutation ground truth (`--cov` to score with coverage) and PR co-change ground truth (`--prs`), grep and importer baselines, four real repos (two held out). Results in [docs/benchmark.md](docs/benchmark.md).
 5. **Semantic channel** ✅ — text channel and name-affinity ranking shipped; embeddings evaluated and rejected (§4).
 6. **GitHub PR bot** ✅ — composite `action.yml` (job summary, one updated PR comment, `fail-on` gate) and a dogfood workflow.
-7. **Hardening** ✅ — per-file index cache, pytest fixture resolution, scoped function-level imports, docs. Deleted-file tracing via the breaks signal.
-8. **Web UI** ✅ — see §9.
+7. **Hardening** ✅ — per-file index cache, pytest fixture resolution, scoped function-level imports, duck-typed callers as affected files, interface signal ignores new symbols and tests, docs. Deleted-file tracing via the breaks signal.
+8. **Web UI** ✅ — see §9; group-by-file view for large graphs.
+9. **Precision** ✅ — optional per-test coverage ranks tests that ran the changed code first (static-only alternatives measured and rejected, §4).
+10. **Distribution** ✅ — private GitHub repo with the PR bot running on its own PRs; packaged as `changelens-mcp` (the PyPI name `changelens` is taken) with a tag-triggered trusted-publishing release workflow. Publishing itself needs a PyPI account, so it isn't done.
 
 ### 7.1 MCP tools
 
@@ -154,7 +157,7 @@ The original "follow-up fix commit" idea was dropped as primary ground truth: li
 - **Metrics:** recall@k (out of min(k, failures), since a top-10 list can't hold 300 failures), overall recall, any-hit rate, precision, and the share of the suite you'd have to run.
 - **Baselines:** (a) `git grep` for the changed function's name in test files, (b) test files that directly import the changed module.
 
-**As built:** `changelens bench` (mutation ground truth). PR co-change ground truth is not built yet. Methodology, results, and every finding that changed the code are in [docs/benchmark.md](docs/benchmark.md).
+**As built:** `changelens bench` (mutation ground truth), `--cov` (with coverage) and `--prs` (PR co-change ground truth). Methodology, results, and every finding that changed the code are in [docs/benchmark.md](docs/benchmark.md).
 
 ---
 
@@ -181,11 +184,11 @@ The original "follow-up fix commit" idea was dropped as primary ground truth: li
 
 - **Scope creep** — Mitigation: the benchmark gates every addition.
 - **Dependency resolution accuracy** — dynamic imports, duck typing and pytest fixtures are invisible to static analysis. Mitigation: measure recall honestly; that gap is exactly what the semantic channel has to earn its place by closing.
-- **Over-reach in large repos** — realised: on click and jinja the graph reaches 50–60% of the suite, because hub classes connect everything. Mitigation: ranking (depth + name affinity) puts the likely failures first, and agents see the top `limit` (50). Depth 5 was chosen from a measured recall/breadth trade-off (§8).
+- **Over-reach in large repos** — realised: on the benchmark repos the graph reaches 45–70% of the suite, because hub classes connect everything, and that breadth is largely real (pruning hubs loses the true failures). Mitigation: ranking (depth + name affinity) puts likely failures first, agents see the top `limit` (50), and optional coverage ranks tests that ran the changed code first. Depth 5 was chosen from a measured recall/breadth trade-off (§8).
 - **Benchmark credibility** — Mitigation: mechanical ground truth, published methodology, honest baselines.
 
 ---
 
 ## 11. Résumé Framing
 
-> Built a change-impact engine that fuses static dependency-graph traversal with a text-retrieval channel to predict the blast radius of a code change, served to AI coding agents over MCP. Benchmarked with mutation-derived ground truth on click and jinja: 96–100% of actually-failing tests found, and 96–97% of them in the top 10 predicted test files vs. 25–46% for a grep baseline. Embedding models were evaluated and rejected on the same benchmark.
+> Built a change-impact engine that fuses static dependency-graph traversal with a text-retrieval channel to predict the blast radius of a code change, served to AI coding agents over MCP and as a GitHub PR bot. Benchmarked on four open-source repos (two held out from tuning) with mutation-derived ground truth: 96–100% of actually-failing tests found vs. 15–38% for a grep baseline; on real commits, 78–87% of the test files developers touched appear in the top 10 predictions vs. 38–53% for grep. Embedding models and a learned ranker were evaluated and rejected on the same benchmark; optional runtime coverage lifts recall@10 from 56–71% to 90–96%.
