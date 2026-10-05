@@ -251,3 +251,13 @@ def test_cochange_bench(repo):
     assert [r["modified_tests"] for r in result["records"]] == [["tests/test_api.py"]]
     assert result["summary"]["changelens-files"]["recall"] == 1.0
     assert subprocess.run(["git", "worktree", "list"], cwd=repo, capture_output=True, text=True).stdout.count("\n") == 1
+
+
+def test_interface_ignores_new_and_test_symbols(repo):
+    # a brand-new public function and a new test are not interface changes; editing add's signature is
+    (repo / "pkg/core.py").write_text(FILES["pkg/core.py"] + "\n\ndef brand_new(x):\n    return x\n")
+    (repo / "tests/test_api.py").write_text(FILES["tests/test_api.py"] + "\n\ndef test_new():\n    pass\n")
+    risk = server.explain_risk(str(repo))["risk"]
+    assert "api" not in risk["change_types"]
+    (repo / "pkg/core.py").write_text(FILES["pkg/core.py"].replace("def add(a, b):", "def add(a, b, c=0):"))
+    assert next(s for s in server.explain_risk(str(repo))["risk"]["signals"] if s["name"] == "interface")["value"] == 1
