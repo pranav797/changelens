@@ -204,3 +204,26 @@ def test_reexport_shadows_submodule(repo):
     (repo / "tests/test_co.py").write_text("from pkg import checkout\n\n\ndef test_co():\n    assert checkout() == 1\n")
     tests = server.find_related_tests(str(repo), symbol="pkg.checkout.checkout")["tests"]
     assert [t["id"] for t in tests] == ["tests/test_co.py::test_co"]
+
+
+def test_pytest_fixtures(repo):
+    (repo / "tests/conftest.py").write_text(
+        "import pytest\nfrom pkg.core import Calc, add\n\n\n"
+        "@pytest.fixture\ndef calc():\n    return Calc()\n\n\n"
+        "@pytest.fixture(name='adder')\ndef _adder():\n    return add\n\n\n"
+        "@pytest.fixture(autouse=True)\ndef setup_env():\n    add(0, 0)\n")
+    (repo / "tests/test_fx.py").write_text(
+        "import pytest\n\n\n"
+        "def test_total(calc):\n    assert calc.total([1]) == 1\n\n\n"
+        "def test_named(adder):\n    assert adder(1, 1) == 2\n\n\n"
+        "@pytest.mark.usefixtures('calc')\nclass TestMarked:\n    def test_marked(self):\n        pass\n")
+    (repo / "tests/sub").mkdir()
+    (repo / "tests/sub/conftest.py").write_text("import pytest\n\n\n@pytest.fixture\ndef calc():\n    return None\n")
+    (repo / "tests/sub/test_override.py").write_text("def test_override(calc):\n    pass\n")
+
+    ids = lambda sym: {t["id"] for t in server.find_related_tests(str(repo), symbol=sym)["tests"]}
+    calc_tests = ids("Calc.total")  # reached only through the calc fixture (param or usefixtures)
+    assert {"tests/test_fx.py::test_total", "tests/test_fx.py::TestMarked::test_marked"} <= calc_tests
+    assert "tests/sub/test_override.py::test_override" not in calc_tests  # nearer conftest overrides calc
+    assert "tests/test_fx.py::test_named" in ids("pkg.core.add")  # @pytest.fixture(name=...)
+    assert "tests/sub/test_override.py::test_override" in ids("setup_env")  # autouse reaches every test in scope
