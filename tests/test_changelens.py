@@ -174,3 +174,33 @@ def test_ui_api(repo):
         assert not (repo / "pwned").exists()
     finally:
         httpd.shutdown()
+
+
+def test_bench(repo):
+    import sys
+
+    from changelens.bench import bench, mutate, report
+    from changelens.index import Index
+
+    # mutation inserts a raise after the docstring and restores byte-for-byte
+    core = repo / "pkg/core.py"
+    before = core.read_bytes()
+    original = mutate(repo, Index(repo).symbols["pkg.core.add"])
+    assert original == before and 'raise RuntimeError("changelens mutant")\n    return a + b' in core.read_text()
+    core.write_bytes(original)
+
+    result = bench(repo, [sys.executable, "-m", "pytest"], n=3, log=lambda *a: None)
+    assert {r["symbol"] for r in result["records"]} == {"pkg.core.add", "pkg.core.Calc.total", "pkg.api.run"}
+    assert all(r["failed"] == ["tests/test_api.py::test_run"] for r in result["records"])
+    assert result["summary"]["changelens"]["recall"] == 1.0
+    assert "| changelens |" in report(result)
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout == ""
+
+
+def test_reexport_shadows_submodule(repo):
+    # pkg/__init__ does `from .checkout import checkout`: `from pkg import checkout` is the function, not the module
+    (repo / "pkg/checkout.py").write_text("def checkout():\n    return 1\n")
+    (repo / "pkg/__init__.py").write_text("from .checkout import checkout\n")
+    (repo / "tests/test_co.py").write_text("from pkg import checkout\n\n\ndef test_co():\n    assert checkout() == 1\n")
+    tests = server.find_related_tests(str(repo), symbol="pkg.checkout.checkout")["tests"]
+    assert [t["id"] for t in tests] == ["tests/test_co.py::test_co"]

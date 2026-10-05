@@ -169,6 +169,12 @@ class Index:
         # re-exports: `pkg.name` / an import binding, where pkg does `from .api import name`: follow to the real
         # symbol. hops bounds cycles; if the target is outside the repo, the binding itself is the answer.
         kind = self.symbols[cand].kind
+        if kind == "module" and "." in cand and hops:
+            # `from .checkout import checkout` in pkg/__init__ makes pkg.checkout the function, not the submodule
+            parent, last = cand.rsplit(".", 1)
+            target = self.aliases.get(parent, {}).get(last)
+            if target and target != cand and (real := self._resolve_parts(target.split(".") + parts[i:], 1, hops - 1)):
+                return real
         if kind == "module" and i < len(parts):
             owner, name, rest = cand, parts[i], parts[i + 1:]
         elif kind == "import":
