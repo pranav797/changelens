@@ -6,7 +6,7 @@ inputs:
     default: ""
   depth:
     description: How many dependency steps to follow.
-    default: "4"
+    default: "5"
   fail-on:
     description: Fail the check when the change will break code ("breaks") or reaches a risk level ("high", "medium"). Empty never fails.
     default: "breaks"

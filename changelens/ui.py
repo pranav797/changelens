@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 
 from . import server
-from .analyze import affected_files, tests_for
+from .analyze import DEFAULT_DEPTH, affected_files, tests_for
 from .index import git, state_dir
 
 HISTORY_SHOWN = 50
@@ -30,7 +30,7 @@ def read_history(repo):
 
 def run(repo, q):
     """One analysis: a change (`base`) or one `symbol`, always in analyze_change's shape."""
-    depth, limit = int(q.get("depth", 4)), int(q.get("limit", 200))
+    depth, limit = int(q.get("depth", DEFAULT_DEPTH)), int(q.get("limit", 200))
     if q.get("symbol"):
         index, seeds, dist, exclude = server._start(repo, "HEAD", "", q["symbol"], depth)
         return {"changed_files": [], "changed_symbols": seeds, "affected_files": affected_files(index, dist, exclude)[:limit],

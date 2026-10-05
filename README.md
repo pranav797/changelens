@@ -23,7 +23,7 @@ uv run changelens deps pkg.core.add                    # depends_on / dependents
 uv run changelens search "proxy auth header"
 ```
 
-Common flags: `--repo PATH`, `--depth N` (default 4), `--limit N`, `--json`. Change commands take `--base REF` or `--diff-file F` (`-` for stdin).
+Common flags: `--repo PATH`, `--depth N` (default 5), `--limit N`, `--json`. Change commands take `--base REF` or `--diff-file F` (`-` for stdin).
 
 ## Web UI
 
