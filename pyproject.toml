@@ -10,7 +10,7 @@ dependencies = ["mcp>=2.3,<3"]
 changelens = "changelens.cli:main"
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "pytest-cov"]
 
 [build-system]
 requires = ["hatchling"]

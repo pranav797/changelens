@@ -103,15 +103,19 @@ def score(pred, truth, all_tests):
     }
 
 
-def predictors(index, root, sym, test_texts):
+def predictors(index, root, sym, test_texts, use_coverage=False):
     """Ranked test lists from ChangeLens and the two baselines, for the currently mutated tree."""
     name = sym.name.rsplit(".", 1)[-1]
     module = index.by_file[sym.file][0].name
     word = re.compile(rf"\b{re.escape(name)}\b")
     importers = sorted(f for f, syms in index.by_file.items() if is_test(f) and any(
         t == module or t.startswith(module + ".") for t in index.aliases.get(syms[0].name, {}).values()))
-    changelens = [t["id"] for t in analyze(index, git_diff(root, "HEAD"), limit=10**6)["tests"]]
-    return {
+    diff = git_diff(root, "HEAD")
+    with_cov = [t["id"] for t in analyze(index, diff, limit=10**6)["tests"]] if use_coverage else None
+    index.coverage = {}  # plain ChangeLens is always scored without runtime data
+    changelens = [t["id"] for t in analyze(index, diff, limit=10**6)["tests"]]
+    extra = {"changelens+cov": with_cov} if use_coverage else {}
+    return {**extra,
         "changelens": changelens,
         # same ranking collapsed to test files: the like-for-like comparison with the file-level baselines
         "changelens-files": list(dict.fromkeys(t.split("::")[0] for t in changelens)),
@@ -120,7 +124,8 @@ def predictors(index, root, sym, test_texts):
     }
 
 
-def bench(repo=".", test_cmd="python -m pytest", n=30, seed=0, timeout=900, log=lambda *a: print(*a, file=sys.stderr)):
+def bench(repo=".", test_cmd="python -m pytest", n=30, seed=0, timeout=900, log=lambda *a: print(*a, file=sys.stderr),
+          use_coverage=False):
     root = Path(git(repo, "rev-parse", "--show-toplevel").strip())
     if git(root, "status", "--porcelain", "--untracked-files=no").strip():
         raise ValueError("commit or stash tracked changes first: the benchmark diffs each mutant against HEAD")
@@ -130,6 +135,10 @@ def bench(repo=".", test_cmd="python -m pytest", n=30, seed=0, timeout=900, log=
     if baseline is None or not all_tests:
         raise ValueError(f"could not run the test suite with {test_cmd!r} in {root}")
     log(f"{len(all_tests)} tests, {len(baseline)} already failing (ignored)")
+    if use_coverage:  # one per-test coverage run of the unmutated tree, like a CI job would keep
+        from . import coverage
+        data = coverage.import_coverage(index, coverage.collect(root, test_cmd, timeout))
+        log(f"coverage: {data['tests']} tests over {len(data['symbols'])} symbols")
     test_texts = {f: (root / f).read_text(encoding="utf-8", errors="replace") for f in index.by_file if is_test(f)}
     pool = [s for s in index.symbols.values() if s.kind == "function" and not is_test(s.file)]
     random.Random(seed).shuffle(pool)
@@ -144,7 +153,7 @@ def bench(repo=".", test_cmd="python -m pytest", n=30, seed=0, timeout=900, log=
         tried += 1
         try:
             truth = failing(root, test_cmd, timeout)
-            preds = predictors(Index(root), root, sym, test_texts) if truth else None
+            preds = predictors(Index(root), root, sym, test_texts, use_coverage) if truth else None
         finally:
             (root / sym.file).write_bytes(original)
         truth = (truth or set()) - baseline
@@ -156,6 +165,9 @@ def bench(repo=".", test_cmd="python -m pytest", n=30, seed=0, timeout=900, log=
         records.append(rec)
         log(f"{len(records):>3}  {sym.name}: {len(truth)} failed; "
             + ", ".join(f"{m} {s['recall']:.0%}" for m, s in rec["scores"].items()))
+    if use_coverage:
+        from . import coverage
+        coverage.clear(root)  # don't leave benchmark coverage behind for normal use
     if git(root, "status", "--porcelain", "--untracked-files=no").strip():
         raise RuntimeError("working tree not clean after benchmark: check `git diff`")
     return {"repo": str(root), "test_cmd": test_cmd if isinstance(test_cmd, str) else " ".join(test_cmd),

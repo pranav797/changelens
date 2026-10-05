@@ -261,3 +261,26 @@ def test_interface_ignores_new_and_test_symbols(repo):
     assert "api" not in risk["change_types"]
     (repo / "pkg/core.py").write_text(FILES["pkg/core.py"].replace("def add(a, b):", "def add(a, b, c=0):"))
     assert next(s for s in server.explain_risk(str(repo))["risk"]["signals"] if s["name"] == "interface")["value"] == 1
+
+
+def test_coverage_ranking(repo):
+    import sys
+
+    from changelens import coverage
+    from changelens.index import Index
+
+    # a test that never runs add() but sits in the graph, and one that does run it
+    (repo / "tests/test_more.py").write_text(
+        "from pkg.core import Calc, add\n\n\ndef test_calls_add():\n    assert add(1, 2) == 3\n\n\n"
+        "def test_only_mentions():\n    assert Calc\n")
+    sh(repo, "add", ".")
+    sh(repo, "commit", "-qm", "more tests")
+    data = coverage.import_coverage(Index(repo), coverage.collect(repo, [sys.executable, "-m", "pytest"]))
+    assert "tests/test_more.py::test_calls_add" in data["symbols"]["pkg.core.add"]
+
+    tests = server.find_related_tests(str(repo), symbol="pkg.core.add")["tests"]
+    covered = [t["id"] for t in tests if t["covered"]]
+    assert covered == [t["id"] for t in tests[:len(covered)]]  # everything that ran add() comes first
+    assert {"tests/test_more.py::test_calls_add", "tests/test_api.py::test_run"} == set(covered)
+    coverage.clear(repo)
+    assert "covered" not in server.find_related_tests(str(repo), symbol="pkg.core.add")["tests"][0]
