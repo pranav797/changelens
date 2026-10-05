@@ -1,0 +1,65 @@
+name: ChangeLens
+description: Predict what a pull request could break, which tests to run, and how risky it is; post it as one PR comment.
+inputs:
+  base:
+    description: Revision range passed to `git diff`. Defaults to the PR's base branch (origin/<base>...HEAD).
+    default: ""
+  depth:
+    description: How many dependency steps to follow.
+    default: "4"
+  fail-on:
+    description: Fail the check when the change will break code ("breaks") or reaches a risk level ("high", "medium"). Empty never fails.
+    default: "breaks"
+  comment:
+    description: Post (and on later pushes, update) a PR comment with the report.
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v6
+
+    - name: Analyze change
+      id: analyze
+      shell: bash
+      env:  # inputs reach the script only through env vars, never inlined into it
+        ACTION_PATH: ${{ github.action_path }}
+        BASE: ${{ inputs.base || format('origin/{0}...HEAD', github.base_ref) }}
+        DEPTH: ${{ inputs.depth }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        report="$RUNNER_TEMP/changelens.md"
+        args=(analyze --base "$BASE" --depth "$DEPTH")
+        [ -n "$FAIL_ON" ] && args+=(--fail-on "$FAIL_ON")
+        status=0
+        uvx --from "$ACTION_PATH" changelens "${args[@]}" > "$report" || status=$?
+        cat "$report" >> "$GITHUB_STEP_SUMMARY"
+        echo "report=$report" >> "$GITHUB_OUTPUT"
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+
+    - name: Post or update PR comment
+      if: inputs.comment == 'true' && github.event.pull_request.number
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR: ${{ github.event.pull_request.number }}
+        REPORT: ${{ steps.analyze.outputs.report }}
+      run: |
+        marker='<!-- changelens -->'
+        body="$marker"$'\n'"$(cat "$REPORT")"
+        id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+               --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)
+        if [ -n "$id" ]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -f body="$body" > /dev/null
+        else
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
+        fi
+
+    - name: Apply fail-on gate
+      if: steps.analyze.outputs.status != '0'
+      shell: bash
+      env:
+        STATUS: ${{ steps.analyze.outputs.status }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        echo "::error::ChangeLens failed (fail-on: $FAIL_ON, exit $STATUS); see the report in the job summary."
+        exit "$STATUS"

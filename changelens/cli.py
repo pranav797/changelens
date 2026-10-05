@@ -5,6 +5,9 @@ import sys
 from . import server
 from .analyze import risk_markdown, to_markdown
 
+FAIL_ON = ("breaks", "high", "medium")
+LEVELS = ("low", "medium", "high")
+
 # subcommand -> (MCP tool, accepts a change, accepts --symbol, positional arg)
 COMMANDS = {
     "analyze": (server.analyze_change, True, False, None),
@@ -34,6 +37,8 @@ def main(argv=None):
             s.add_argument("--depth", type=int, default=4)
         if name != "risk":
             s.add_argument("--limit", type=int, default=10 if name == "search" else 50)
+        if name in ("analyze", "risk"):
+            s.add_argument("--fail-on", choices=FAIL_ON, help="exit 1 if the change will break code or reaches this risk level")
     sub.add_parser("mcp", help="run the MCP server over stdio")
     u = sub.add_parser("ui", help="open the interactive web UI for a repo")
     u.add_argument("--repo", default=".")
@@ -67,7 +72,7 @@ def main(argv=None):
         return
 
     tool = COMMANDS[args.cmd][0]
-    kwargs = {k: v for k, v in vars(args).items() if k not in ("cmd", "json", "diff_file")}
+    kwargs = {k: v for k, v in vars(args).items() if k not in ("cmd", "json", "diff_file", "fail_on")}
     if "depth" in kwargs:
         kwargs["max_depth"] = kwargs.pop("depth")
     if getattr(args, "diff_file", None):
@@ -89,6 +94,15 @@ def main(argv=None):
         print("\n".join(f["file"] for f in result["affected_files"]))
     else:
         print(json.dumps(result, indent=2))
+    if getattr(args, "fail_on", None) and fails(result["risk"], args.fail_on):
+        sys.exit(1)
+
+
+def fails(risk, fail_on):
+    """CI gate: `breaks` fails only on a certain break; `high`/`medium` fail at or above that risk level."""
+    if fail_on == "breaks":
+        return bool(risk["breaks"])
+    return LEVELS.index(risk["level"]) >= LEVELS.index(fail_on)
 
 
 if __name__ == "__main__":
