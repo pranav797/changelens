@@ -5,11 +5,10 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
-from pathlib import Path
 
 from . import server
 from .analyze import affected_files, tests_for
-from .index import git
+from .index import git, state_dir
 
 HISTORY_SHOWN = 50
 LOCAL_HOSTS = {"127.0.0.1", "localhost"}
@@ -17,7 +16,7 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost"}
 
 def history_file(repo):
     """Per-repo history inside .git, so it is never committed."""
-    return Path(git(repo, "rev-parse", "--absolute-git-dir").strip()) / "changelens" / "history.jsonl"
+    return state_dir(repo) / "history.jsonl"
 
 
 def read_history(repo):

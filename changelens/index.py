@@ -1,16 +1,27 @@
 """Parse a Python repo into symbols and a reference graph using the stdlib ast."""
 import ast
+import hashlib
+import json
+import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+CACHE_VERSION = 3  # bump whenever extract() output changes
+RACY_NS = 2_000_000_000  # like git: a file modified this close to the cache write may have changed unseen
 
 
 def git(root, *args) -> str:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True,
                           text=True, encoding="utf-8", check=True).stdout
+
+
+def state_dir(root):
+    """Per-repo ChangeLens state (index cache, UI history), inside .git so it is never committed."""
+    return Path(git(root, "rev-parse", "--absolute-git-dir").strip()) / "changelens"
 
 
 def is_test(path: str) -> bool:
@@ -53,23 +64,6 @@ def _dotted(node):
     return None
 
 
-def _own_names(node, skip):
-    """Names/dotted names used directly in node, not inside nested symbols."""
-    out, stack = set(), list(ast.iter_child_nodes(node))
-    while stack:
-        n = stack.pop()
-        if n in skip:
-            continue
-        if isinstance(n, (ast.Import, ast.ImportFrom)):
-            out.update(a.asname or a.name for a in n.names if a.name != "*")
-            continue
-        if isinstance(n, (ast.Name, ast.Attribute)) and (d := _dotted(n)):
-            out.add(d)
-            continue
-        stack.extend(ast.iter_child_nodes(n))
-    return out
-
-
 def _bound(stmt):
     """Names a module-level statement binds -> True if bound by an import."""
     names = {}
@@ -83,83 +77,206 @@ def _bound(stmt):
     return names
 
 
+def _import_record(n):
+    return [isinstance(n, ast.ImportFrom), getattr(n, "level", 0), getattr(n, "module", None),
+            [[a.name, a.asname] for a in n.names]]
+
+
+def _scan(node, skip):
+    """One pass over a symbol's own region (not nested symbols): dotted names used, names assigned,
+    parameter names, and import statements."""
+    names, stores, args, imports = set(), set(), set(), []
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        imports.append(_import_record(node))
+    stack = list(ast.iter_child_nodes(node))
+    while stack:
+        n = stack.pop()
+        if n in skip:
+            continue
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            imports.append(_import_record(n))
+            names.update(a.asname or a.name for a in n.names if a.name != "*")
+            continue
+        if isinstance(n, ast.arg):
+            args.add(n.arg)
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            stores.add(n.id)
+        if isinstance(n, (ast.Name, ast.Attribute)) and (d := _dotted(n)):
+            names.add(d)
+            continue
+        stack.extend(ast.iter_child_nodes(n))
+    return names, stores, args, imports
+
+
+def _usefixtures(node):
+    return [a.value for d in node.decorator_list if isinstance(d, ast.Call)
+            and (_dotted(d.func) or "").endswith("usefixtures")
+            for a in d.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+
+
+def extract(f, source):
+    """Everything the index needs from one file, as plain JSON-able data (this is what gets cached)."""
+    tree = ast.parse(source, f)
+    mod = module_name(f)
+    syms, nodes = [], {}
+
+    def add(row, node):
+        syms.append(row)
+        nodes[row[0]] = node
+
+    add([mod, 1, max((n.end_lineno for n in tree.body), default=1), 0, "module", ast.get_docstring(tree) or ""], tree)
+
+    def visit(parent, body):
+        for node in body:
+            if isinstance(node, DEFS):
+                name = f"{parent}.{node.name}"
+                kind = "class" if isinstance(node, ast.ClassDef) else "function"
+                add([name, min([d.lineno for d in node.decorator_list] + [node.lineno]), node.end_lineno,
+                     max(node.lineno, node.body[0].lineno - 1), kind, ast.get_docstring(node) or ""], node)
+                if kind == "class":
+                    visit(name, node.body)
+    visit(mod, tree.body)
+    # module-level names (constants, imports, defs inside if/try) get a symbol spanning their statement,
+    # so editing that statement reaches the functions that use the name
+    for stmt in tree.body:
+        if not isinstance(stmt, DEFS):
+            for name, is_import in _bound(stmt).items():
+                if f"{mod}.{name}" not in nodes:
+                    add([f"{mod}.{name}", stmt.lineno, stmt.end_lineno, 0, "import" if is_import else "variable", ""], stmt)
+
+    skip = {node for name, node in nodes.items() if name != mod}
+    own, fixtures, params, usefix = {}, {}, {}, {}
+    test_file = is_test(f)
+    for name, node in nodes.items():
+        n, s, a, im = _scan(node, skip)
+        own[name] = [sorted(n), sorted(s), sorted(a), im]
+        if not test_file or not isinstance(node, DEFS):
+            continue
+        usefix[name] = _usefixtures(node)
+        if isinstance(node, ast.ClassDef):
+            continue
+        params[name] = [p.arg for p in node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+                        if p.arg not in ("self", "cls")]
+        for d in node.decorator_list:
+            call = d if isinstance(d, ast.Call) else None
+            if (_dotted(call.func if call else d) or "").rsplit(".", 1)[-1] == "fixture":
+                kw = {k.arg: k.value for k in call.keywords} if call else {}
+                fixtures[name] = [kw["name"].value if isinstance(kw.get("name"), ast.Constant) else node.name,
+                                  isinstance(kw.get("autouse"), ast.Constant) and kw["autouse"].value is True]
+    return {"syms": syms, "own": own, "fixtures": fixtures, "params": params, "usefix": usefix}
+
+
+def _alias_map(f, mod, records):
+    """Import records -> {local name: dotted target}, resolving relative imports against the package."""
+    pkg = mod.split(".") if f.endswith("__init__.py") else mod.split(".")[:-1]
+    aliases = {}
+    for is_from, level, module, names in records:
+        if not is_from:
+            for name, asname in names:
+                aliases[asname or name.split(".")[0]] = name if asname else name.split(".")[0]
+            continue
+        base = module or ""
+        if level:
+            base = ".".join(pkg[:len(pkg) - (level - 1)] + ([module] if module else []))
+        for name, asname in names:
+            if name != "*":
+                aliases[asname or name] = f"{base}.{name}"
+    return aliases
+
+
 class Index:
-    # ponytail: full in-memory rebuild per call; persist + re-index incrementally when a repo is too slow
-    def __init__(self, repo="."):
+    def __init__(self, repo=".", cache=True):
         self.root = Path(git(repo, "rev-parse", "--show-toplevel").strip())
         self.symbols: dict[str, Symbol] = {}
         self.refs: dict[str, set[str]] = {}
         self.dependents: dict[str, set[str]] = {}
         self.by_file: dict[str, list[Symbol]] = {}
         self.uses: dict[str, set[str]] = {}  # symbol -> bare names it uses (first part of each dotted name)
-        self._nodes: dict[str, ast.AST] = {}
         files = git(self.root, "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.py").splitlines()
-        parsed = []
-        for f in files:
-            try:
-                tree = ast.parse((self.root / f).read_bytes(), f)
-            except (SyntaxError, ValueError, OSError):
+        facts = self._facts(files, cache)
+        # definitions first, then module-level bindings only where no definition has that name (e.g. a package's
+        # `from . import utils` must not shadow the real pkg.utils module)
+        for bindings in (False, True):
+            for f, fx in facts.items():
+                for row in fx["syms"]:
+                    if (row[4] in ("import", "variable")) == bindings and row[0] not in self.symbols:
+                        self.symbols[row[0]] = Symbol(row[0], f, *row[1:])
+        for f, fx in list(facts.items()):
+            kept = [r for r in fx["syms"] if self.symbols[r[0]].file == f]
+            if not kept or kept[0] is not fx["syms"][0]:  # another file already defines this module name
+                for r in kept:
+                    del self.symbols[r[0]]
+                del facts[f]
                 continue
-            parsed.append((f, module_name(f), tree))
-            self._collect(f, parsed[-1][1], tree)
-        self.aliases = {mod: self._aliases(f, mod, tree) for f, mod, tree in parsed}
-        for f, mod, tree in parsed:
-            self._link(f, mod)
-        self._link_fixtures()
+            mod_own = fx["own"][kept[0][0]]
+            for r in fx["syms"]:  # a dropped binding's statement still belongs to this module
+                if r not in kept:
+                    names, stores, args, imports = fx["own"].pop(r[0])
+                    names = {*names, *(asname or name for _, _, _, ns in imports for name, asname in ns if name != "*")}
+                    fx["own"][kept[0][0]] = mod_own = [sorted({*mod_own[0], *names}), sorted({*mod_own[1], *stores}),
+                                                       sorted({*mod_own[2], *args}), mod_own[3] + imports]
+            fx["syms"] = kept
+            self.by_file[f] = [self.symbols[r[0]] for r in kept]
+        self.aliases = {fx["syms"][0][0]: self._aliases(f, fx) for f, fx in facts.items()}
+        for f, fx in facts.items():
+            self._link(f, fx)
+        self._link_fixtures(facts)
         for src, targets in self.refs.items():
             for t in targets:
                 self.dependents.setdefault(t, set()).add(src)
-        del self._nodes
 
-    def _add(self, sym, node):
-        self.symbols[sym.name] = sym
-        self.by_file.setdefault(sym.file, []).append(sym)
-        self._nodes[sym.name] = node
+    def _facts(self, files, use_cache):
+        """extract() per file, reusing cached results for files whose content hasn't changed."""
+        path = state_dir(self.root) / "index.json"
+        cached = {}
+        if use_cache:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if data.get("version") == CACHE_VERSION:
+                    cached, written = data["files"], data["written_ns"]
+            except (OSError, ValueError, KeyError):
+                cached = {}
+        out, entries, dirty = {}, {}, not cached
+        for f in files:
+            try:
+                st = (self.root / f).stat()
+            except OSError:
+                continue
+            hit = cached.get(f)
+            if hit and hit[:2] == [st.st_mtime_ns, st.st_size] and st.st_mtime_ns < written - RACY_NS:
+                entries[f] = hit  # unchanged and not racy: skip reading it at all
+            else:
+                try:
+                    source = (self.root / f).read_bytes()
+                except OSError:
+                    continue
+                digest = hashlib.blake2b(source, digest_size=16).hexdigest()
+                if hit and hit[2] == digest:
+                    entries[f] = [st.st_mtime_ns, st.st_size, digest, hit[3]]
+                else:
+                    try:
+                        fx = extract(f, source)
+                    except (SyntaxError, ValueError, RecursionError):
+                        fx = None
+                    entries[f] = [st.st_mtime_ns, st.st_size, digest, fx]
+                dirty = True
+            if entries[f][3] is not None:
+                out[f] = entries[f][3]
+        if use_cache and (dirty or len(entries) != len(cached)):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(f".{os.getpid()}.tmp")
+                tmp.write_text(json.dumps({"version": CACHE_VERSION, "written_ns": time.time_ns(), "files": entries}),
+                               encoding="utf-8")
+                os.replace(tmp, path)
+            except OSError:
+                pass  # a cache we can't write is just a slower next run
+        return out
 
-    def _collect(self, f, mod, tree):
-        end = max((n.end_lineno for n in tree.body), default=1)
-        self._add(Symbol(mod, f, 1, end, 0, "module", ast.get_docstring(tree) or ""), tree)
-
-        def visit(parent, body):
-            for node in body:
-                if isinstance(node, DEFS):
-                    name = f"{parent}.{node.name}"
-                    start = min([d.lineno for d in node.decorator_list] + [node.lineno])
-                    kind = "class" if isinstance(node, ast.ClassDef) else "function"
-                    self._add(Symbol(name, f, start, node.end_lineno,
-                                     max(node.lineno, node.body[0].lineno - 1), kind,
-                                     ast.get_docstring(node) or ""), node)
-                    if kind == "class":
-                        visit(name, node.body)
-        visit(mod, tree.body)
-        # module-level names (constants, imports, defs inside if/try) get a symbol spanning their statement,
-        # so editing that statement reaches the functions that use the name
-        for stmt in tree.body:
-            if not isinstance(stmt, DEFS):
-                for name, is_import in _bound(stmt).items():
-                    if f"{mod}.{name}" not in self.symbols:
-                        self._add(Symbol(f"{mod}.{name}", f, stmt.lineno, stmt.end_lineno, 0,
-                                         "import" if is_import else "variable"), stmt)
-
-    def _aliases(self, f, mod, tree):
-        """Local name -> dotted target, from every import in the file."""
-        pkg = mod.split(".") if f.endswith("__init__.py") else mod.split(".")[:-1]
-        aliases = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for a in node.names:
-                    if a.asname:
-                        aliases[a.asname] = a.name
-                    else:
-                        aliases[a.name.split(".")[0]] = a.name.split(".")[0]
-            elif isinstance(node, ast.ImportFrom):
-                base = node.module or ""
-                if node.level:
-                    base = ".".join(pkg[:len(pkg) - (node.level - 1)] + ([node.module] if node.module else []))
-                for a in node.names:
-                    if a.name != "*":
-                        aliases[a.asname or a.name] = f"{base}.{a.name}"
-        return aliases
+    def _aliases(self, f, fx):
+        """Module-level imports: local name -> dotted target (function-level imports are scoped in _link)."""
+        records = [r for row in fx["syms"] if row[4] in ("module", "import", "variable") for r in fx["own"][row[0]][3]]
+        return _alias_map(f, fx["syms"][0][0], records)
 
     def _resolve_parts(self, parts, min_len, hops=5):
         for i in range(len(parts), min_len - 1, -1):
@@ -187,11 +304,12 @@ class Index:
             return real
         return cand
 
-    def _link(self, f, mod):
+    def _link(self, f, fx):
+        mod = fx["syms"][0][0]
         mod_parts = mod.split(".")
-        aliases = self.aliases[mod]
+        module_aliases = self.aliases[mod]
 
-        def resolve(dotted, cls):
+        def resolve(dotted, cls, aliases):
             parts = dotted.split(".")
             if parts[0] in ("self", "cls") and cls:
                 # self.method -> the method; plain instance state (self.items) is not a dependency on the class
@@ -201,71 +319,54 @@ class Index:
                         f"{mod}.{parts[0]}" if f"{mod}.{parts[0]}" in self.symbols else None}
             return {self._resolve_parts(mod_parts + parts, len(mod_parts) + 1)}
 
-        syms = self.by_file[f]
-        skip = {self._nodes[s.name] for s in syms if s.kind != "module"}
-        for s in syms:
+        members = {}  # class -> its direct members
+        for s in self.by_file[f]:
+            members.setdefault(s.name.rsplit(".", 1)[0], []).append(s.name)
+        for s in self.by_file[f]:
             parent = s.name.rsplit(".", 1)[0]
             cls = s.name if s.kind == "class" else (
                 parent if parent in self.symbols and self.symbols[parent].kind == "class" else None)
-            node = self._nodes[s.name]
-            names = _own_names(node, skip)
-            local = set()  # names a function binds itself (params, assignments) are not uses of module names
-            if s.kind == "function":
-                local = {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
-                local |= {a.arg for a in ast.walk(node) if isinstance(a, ast.arg)}
+            names, stores, args, imports = fx["own"][s.name]
+            local = set(stores) | set(args) if s.kind == "function" else set()  # a function's own names
             self.uses[s.name] = {d.split(".")[0] for d in names} - local
-            refs = set().union(*(resolve(d, cls) for d in names)) - {None}
+            aliases = module_aliases
+            if imports and s.kind in ("function", "class"):  # imports inside a def are scoped to it
+                aliases = {**module_aliases, **_alias_map(f, mod, imports)}
+            refs = set().union(*(resolve(d, cls, aliases) for d in names)) - {None}
             if s.kind == "class":  # class -> its members, so users of the class see member changes
-                refs |= {c.name for c in syms if c.name.rsplit(".", 1)[0] == s.name}
+                refs.update(members.get(s.name, ()))
             refs.discard(s.name)
             self.refs[s.name] = refs
 
-    def _link_fixtures(self):
+    def _link_fixtures(self, facts):
         """pytest injects fixtures by parameter name: link each test/fixture to the fixtures it would receive."""
         fixtures = {}  # fixture name -> [(symbol, autouse)]
-        for s in self.symbols.values():
-            if s.kind != "function" or not is_test(s.file):
-                continue
-            for d in self._nodes[s.name].decorator_list:
-                call = d if isinstance(d, ast.Call) else None
-                if (_dotted(call.func if call else d) or "").rsplit(".", 1)[-1] != "fixture":
-                    continue
-                kw = {k.arg: k.value for k in call.keywords} if call else {}
-                name = kw["name"].value if isinstance(kw.get("name"), ast.Constant) else s.name.rsplit(".", 1)[-1]
-                autouse = isinstance(kw.get("autouse"), ast.Constant) and kw["autouse"].value is True
-                fixtures.setdefault(name, []).append((s, autouse))
+        for fx in facts.values():
+            for sym, (name, autouse) in fx["fixtures"].items():
+                fixtures.setdefault(name, []).append((self.symbols[sym], autouse))
 
-        def scope(fx, file):
-            """How closely fixture fx applies to file: same module beats the nearest conftest.py; None if unseen."""
-            if fx.file == file:
+        def scope(fixture, file):
+            """How closely a fixture applies to file: same module beats the nearest conftest.py; None if unseen."""
+            if fixture.file == file:
                 return (2, 0)
-            where = PurePosixPath(fx.file)
+            where = PurePosixPath(fixture.file)
             if where.name == "conftest.py":
                 d = where.parent.as_posix()
                 if d == "." or file.startswith(d + "/"):
                     return (1, len(where.parent.parts))
             return None
 
-        def usefixtures(node):
-            return [a.value for d in node.decorator_list if isinstance(d, ast.Call)
-                    and (_dotted(d.func) or "").endswith("usefixtures")
-                    for a in d.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
-
-        autouse = [fx for found in fixtures.values() for fx, auto in found if auto]
-        for s in list(self.symbols.values()):
-            if s.kind != "function" or not is_test(s.file):
-                continue
-            node = self._nodes[s.name]
-            parent = self._nodes.get(s.name.rsplit(".", 1)[0])
-            a = node.args
-            wanted = [p.arg for p in a.posonlyargs + a.args + a.kwonlyargs if p.arg not in ("self", "cls")]
-            wanted += usefixtures(node) + (usefixtures(parent) if isinstance(parent, ast.ClassDef) else [])
-            for name in wanted:
-                seen = [(sc, fx) for fx, _ in fixtures.get(name, ()) if fx is not s and (sc := scope(fx, s.file))]
-                if seen:
-                    self.refs[s.name].add(max(seen, key=lambda x: x[0])[1].name)
-            if s.name.rsplit(".", 1)[-1].startswith("test"):
-                self.refs[s.name].update(fx.name for fx in autouse if fx is not s and scope(fx, s.file))
+        autouse = [fixture for found in fixtures.values() for fixture, auto in found if auto]
+        for f, fx in facts.items():
+            for name, params in fx["params"].items():
+                s = self.symbols[name]
+                wanted = params + fx["usefix"].get(name, []) + fx["usefix"].get(name.rsplit(".", 1)[0], [])
+                for want in wanted:
+                    seen = [(sc, fix) for fix, _ in fixtures.get(want, ()) if fix is not s and (sc := scope(fix, f))]
+                    if seen:
+                        self.refs[name].add(max(seen, key=lambda x: x[0])[1].name)
+                if name.rsplit(".", 1)[-1].startswith("test"):
+                    self.refs[name].update(fix.name for fix in autouse if fix is not s and scope(fix, f))
 
     def symbols_at(self, file, line):
         """Innermost symbol(s) covering a line; several when one statement binds several names."""
