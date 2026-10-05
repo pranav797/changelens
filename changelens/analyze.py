@@ -281,12 +281,19 @@ def changes(index, diff):
 
 
 def affected_files(index, dist, exclude=()):
-    """Non-test files reached at depth >= 1, one entry per file at its shallowest depth."""
+    """Non-test files reached at depth >= 1, one entry per file at its shallowest depth; plus files that call a
+    changed method by name on an untyped object (channel "duck": benchmarked, it only adds noise to test
+    prediction, so it informs this list and nothing else)."""
     files = {}
     for name, (depth, _) in dist.items():
         f = index.symbols[name].file
         if depth and not is_test(f) and f not in exclude and (f not in files or depth < files[f]["depth"]):
-            files[f] = {"file": f, "depth": depth, "why": _chain(dist, name)}
+            files[f] = {"file": f, "depth": depth, "why": _chain(dist, name), "channel": "graph"}
+    for seed in sorted(s for s, (depth, _) in dist.items() if depth == 0):
+        for user in sorted(index.duck_users(seed)):
+            f = index.symbols[user].file
+            if not is_test(f) and f not in exclude and f not in files:
+                files[f] = {"file": f, "depth": 1, "why": [seed, user], "channel": "duck"}
     return sorted(files.values(), key=lambda x: (x["depth"], x["file"]))
 
 
@@ -380,7 +387,9 @@ def to_markdown(r):
     out = [risk_markdown(r["risk"]), "", f"### Tests to run ({len(r['tests'])})"]
     out += [_test_line(t) for t in r["tests"]] or ["- none found"]
     out += ["", f"### Affected files ({len(r['affected_files'])})"]
-    out += [f"- `{a['file']}` (depth {a['depth']}) via {' → '.join(a['why'])}" for a in r["affected_files"]] or ["- none found"]
+    out += [f"- `{a['file']}` (depth {a['depth']}) via {' → '.join(a['why'])}" if a["channel"] == "graph" else
+            f"- `{a['file']}` (likely: `{a['why'][1]}` calls `.{a['why'][0].rsplit('.', 1)[-1]}()` on an untyped object)"
+            for a in r["affected_files"]] or ["- none found"]
     if r["untraced"]:
         out += ["", "### Not traced", *[f"- `{f}`" for f in r["untraced"]]]
     return "\n".join(out)
