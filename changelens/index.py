@@ -197,6 +197,7 @@ class Index:
         self.dependents: dict[str, set[str]] = {}
         self.by_file: dict[str, list[Symbol]] = {}
         self.uses: dict[str, set[str]] = {}  # symbol -> bare names it uses (first part of each dotted name)
+        self.attr_users: dict[str, set[str]] = {}  # attribute name -> symbols calling x.name where x is unresolved
         files = git(self.root, "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.py").splitlines()
         facts = self._facts(files, cache)
         # definitions first, then module-level bindings only where no definition has that name (e.g. a package's
@@ -346,7 +347,11 @@ class Index:
             aliases = module_aliases
             if imports and s.kind in ("function", "class"):  # imports inside a def are scoped to it
                 aliases = {**module_aliases, **_alias_map(f, mod, imports)}
-            refs = set().union(*(resolve(d, cls, aliases) for d in names)) - {None}
+            resolved = {d: resolve(d, cls, aliases) - {None} for d in names}
+            refs = set().union(*resolved.values())
+            for d, r in resolved.items():  # duck typing: `gateway.charge()` on an untyped parameter
+                if "." in d and not r:
+                    self.attr_users.setdefault(d.rsplit(".", 1)[1], set()).add(s.name)
             if s.kind == "class":  # class -> its members, so users of the class see member changes
                 refs.update(members.get(s.name, ()))
             refs.discard(s.name)
@@ -381,6 +386,17 @@ class Index:
                         self.refs[name].add(max(seen, key=lambda x: x[0])[1].name)
                 if name.rsplit(".", 1)[-1].startswith("test"):
                     self.refs[name].update(fix.name for fix in autouse if fix is not s and scope(fix, f))
+
+    def duck_users(self, symbol, limit=25):
+        """Symbols that call a method of this name on something the resolver couldn't type (`gateway.charge()`
+        when Gateway.charge changed). Empty for non-methods, dunders, and names used too widely to mean anything."""
+        sym = self.symbols.get(symbol)
+        parent = self.symbols.get(symbol.rsplit(".", 1)[0])
+        name = symbol.rsplit(".", 1)[-1]
+        if not sym or sym.kind != "function" or not parent or parent.kind != "class" or name.startswith("__"):
+            return set()
+        users = self.attr_users.get(name, set()) - {symbol}
+        return users if len(users) <= limit else set()
 
     def symbols_at(self, file, line):
         """Innermost symbol(s) covering a line; several when one statement binds several names."""
