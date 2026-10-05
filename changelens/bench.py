@@ -29,8 +29,11 @@ def _split(cmd):
 
 
 def _pytest(root, cmd, extra, timeout):
+    args = _split(cmd)
+    if (root / args[0]).is_file():  # e.g. .venv/Scripts/python.exe: Windows won't resolve it against cwd
+        args[0] = str(root / args[0])
     try:
-        return subprocess.run(_split(cmd) + extra, cwd=root, capture_output=True, text=True, encoding="utf-8",
+        return subprocess.run(args + extra, cwd=root, capture_output=True, text=True, encoding="utf-8",
                               errors="replace", timeout=timeout).stdout
     except subprocess.TimeoutExpired:
         return None
