@@ -227,6 +227,12 @@ class Index:
             self._link(f, fx)
         self._link_fixtures(facts)
         self.fixtures = {name for fx in facts.values() for name in fx["fixtures"] if name in self.symbols}
+        self.coverage = {}  # symbol -> test ids that executed it, if a coverage run was imported (coverage.py)
+        try:
+            saved = json.loads((state_dir(self.root) / "coverage.json").read_text(encoding="utf-8"))
+            self.coverage = {s: set(t) for s, t in saved["symbols"].items()}
+        except (OSError, ValueError, KeyError):
+            pass
         self.test_tokens = {name: set(tok) for fx in facts.values() for name, tok in fx["tokens"].items()
                             if name in self.symbols}
         for src, targets in self.refs.items():

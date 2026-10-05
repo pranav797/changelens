@@ -157,12 +157,24 @@ def tests_for(index, dist):
             if tid not in tests or depth < tests[tid]["depth"]:
                 tests[tid] = {"id": tid, "depth": depth, "why": _chain(dist, name), "channel": "graph"}
     seeds = [s for s, (depth, _) in dist.items() if depth == 0]
+    covered = {}
+    if index.coverage:  # tests that executed the changed code in the last coverage run: rank first
+        ids = {_test_id(index, n): n for n in index.symbols if _is_test_item(index, n)}
+        for s in seeds:
+            for tid in index.coverage.get(s, ()):
+                covered.setdefault(tid, s)
+        for tid, seed in covered.items():
+            if tid not in tests and tid in ids:
+                tests[tid] = {"id": tid, "depth": 1, "why": [seed, ids[tid]], "channel": "coverage"}
     for name, matched in text_matches(index, seeds).items():
         tid = _test_id(index, name)
         if tid not in tests:
             root = next((s for s in seeds if matched in (s, *index.dependents.get(s, ()))
                          or matched in text_names(index, [s])), seeds[0])
             tests[tid] = {"id": tid, "depth": TEXT_DEPTH, "why": [root, name], "channel": "text", "matched": matched}
+    if index.coverage:
+        for t in tests.values():
+            t["covered"] = t["id"] in covered
     # a file or Test class is redundant once one of its own tests is listed
     parents = {tid.rsplit("::", i)[0] for tid in tests for i in range(1, tid.count("::") + 1)}
     return sorted((t for t in tests.values() if t["id"] not in parents), key=_rank)
@@ -178,7 +190,8 @@ def name_affinity(symbol, test_id):
 def _rank(test):
     # benchmarked on click (plan §8): depth alone ranks the tests that actually fail poorly once a hub class
     # pulls in half the suite; a test named after what changed is the strongest tie-breaker (recall@10 44% -> 57%)
-    return test["depth"] - W_NAME_AFFINITY * name_affinity(test["why"][0], test["id"]), test["id"]
+    return (not test.get("covered", False), test["depth"] - W_NAME_AFFINITY * name_affinity(test["why"][0], test["id"]),
+            test["id"])
 
 
 def volatility(root, files):
@@ -354,10 +367,18 @@ def risk_markdown(risk):
     return "\n".join(out)
 
 
+def _test_line(t):
+    ran = " **ran this code**" if t.get("covered") else ""
+    if t["channel"] == "text":
+        return f"- `{t['id']}`{ran} (text match: test source names `{t['matched']}`)"
+    if t["channel"] == "coverage":
+        return f"- `{t['id']}`{ran} (found by coverage, not the dependency graph)"
+    return f"- `{t['id']}`{ran} (depth {t['depth']}) via {' → '.join(t['why'])}"
+
+
 def to_markdown(r):
     out = [risk_markdown(r["risk"]), "", f"### Tests to run ({len(r['tests'])})"]
-    out += [f"- `{t['id']}` (depth {t['depth']}) via {' → '.join(t['why'])}" if t["channel"] == "graph"
-            else f"- `{t['id']}` (text match: test source names `{t['matched']}`)" for t in r["tests"]] or ["- none found"]
+    out += [_test_line(t) for t in r["tests"]] or ["- none found"]
     out += ["", f"### Affected files ({len(r['affected_files'])})"]
     out += [f"- `{a['file']}` (depth {a['depth']}) via {' → '.join(a['why'])}" for a in r["affected_files"]] or ["- none found"]
     if r["untraced"]:
