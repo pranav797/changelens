@@ -163,6 +163,82 @@ def bench(repo=".", test_cmd="python -m pytest", n=30, seed=0, timeout=900, log=
             "summary": summarize(records)}
 
 
+def _status(root, a, b):
+    """git diff --name-status a b -> [(status letter, old path, new path)]."""
+    out = []
+    for line in git(root, "diff", "--name-status", "--no-renames", a, b).splitlines():
+        status, path = line.split("\t", 1)
+        out.append((status[0], path))
+    return out
+
+
+def cochange(repo=".", n=50, scan=400, max_files=20, log=lambda *a: print(*a, file=sys.stderr)):
+    """PR co-change benchmark (plan §8): replay recent commits that change both source and tests. Rebuild the
+    pre-commit state plus only the source changes, and ask which existing test files the change affects;
+    ground truth is the test files the commit actually modified (brand-new test files can't be predicted)."""
+    import shutil
+    import tempfile
+
+    root = Path(git(repo, "rev-parse", "--show-toplevel").strip())
+    commits = git(root, "log", "--first-parent", "--format=%H %P", f"-n{scan}").splitlines()
+    wt = Path(tempfile.mkdtemp(prefix="changelens-cochange-"))
+    git(root, "worktree", "add", "--detach", "-f", str(wt), "HEAD")
+    records, tried = [], 0
+    try:
+        for line in commits:
+            if len(records) >= n:
+                break
+            commit, *parents = line.split()
+            if not parents:
+                continue
+            changes = _status(root, parents[0], commit)
+            py = [(s, p) for s, p in changes if p.endswith(".py")]
+            source = [(s, p) for s, p in py if not is_test(p)]
+            truth = {p for s, p in py if s == "M" and is_test(p) and not p.endswith("conftest.py")}
+            if not source or not truth or len(source) > max_files:
+                continue
+            tried += 1
+            git(wt, "checkout", "-q", "-f", "--detach", parents[0])
+            git(wt, "clean", "-q", "-fd")
+            for s, p in source:  # pre-commit tree + this commit's source changes only
+                if s == "D":
+                    (wt / p).unlink(missing_ok=True)
+                else:
+                    git(wt, "checkout", commit, "--", p)
+            diff = git(wt, "diff", "HEAD", "--", *[p for _, p in source])
+            if not diff.strip():
+                continue
+            index = Index(wt)
+            test_files = {f for f in index.by_file if is_test(f) and not f.endswith("conftest.py")}
+            result = analyze(index, diff, limit=10**6)
+            changelens = list(dict.fromkeys(t["id"].split("::")[0] for t in result["tests"]))
+            names = {s.rsplit(".", 1)[-1] for s in result["changed_symbols"]
+                     if index.symbols[s].kind in ("function", "class")}
+            mods = {index.by_file[p][0].name for _, p in source if p in index.by_file}
+            texts = {f: (wt / f).read_text(encoding="utf-8", errors="replace") for f in test_files}
+            words_re = [re.compile(rf"\b{re.escape(x)}\b") for x in names]
+            preds = {
+                "changelens-files": changelens,
+                "grep": sorted(f for f in test_files if any(w.search(texts[f]) for w in words_re)),
+                "importers": sorted(f for f in test_files if any(
+                    t == m or t.startswith(m + ".") for t in index.aliases.get(index.by_file[f][0].name, {}).values()
+                    for m in mods)),
+            }
+            truth &= test_files
+            if not truth:
+                continue
+            records.append({"commit": commit[:10], "subject": git(root, "log", "-1", "--format=%s", commit).strip(),
+                            "source": [p for _, p in source], "modified_tests": sorted(truth),
+                            "scores": {m: score(p, truth, test_files) for m, p in preds.items()}})
+            log(f"{len(records):>3}  {commit[:10]} {records[-1]['subject'][:60]}: "
+                + ", ".join(f"{m} {s['recall']:.0%}" for m, s in records[-1]["scores"].items()))
+    finally:
+        git(root, "worktree", "remove", "--force", str(wt))
+        shutil.rmtree(wt, ignore_errors=True)
+    return {"kind": "cochange", "repo": str(root), "seed": None, "tests": None, "mutants_tried": tried,
+            "records": records, "summary": summarize(records)}
+
+
 def summarize(records):
     out = {}
     for m in (records[0]["scores"] if records else ()):
@@ -175,8 +251,11 @@ def summarize(records):
 
 def report(result):
     s = result["summary"]
-    lines = [f"**{result['repo']}**: {len(result['records'])} covered mutants "
-             f"({result['mutants_tried']} tried), {result['tests']} tests, seed {result['seed']}", "",
+    head = (f"{len(result['records'])} commits that change source and existing tests ({result['mutants_tried']} tried); "
+            "scored on test files" if result.get("kind") == "cochange" else
+            f"{len(result['records'])} covered mutants ({result['mutants_tried']} tried), {result['tests']} tests, "
+            f"seed {result['seed']}")
+    lines = [f"**{result['repo']}**: {head}", "",
              "| Method | Recall@5 | Recall@10 | Recall | Any hit | Precision | Suite run | Predictions |",
              "|---|---|---|---|---|---|---|---|"]
     for m, v in s.items():
