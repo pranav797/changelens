@@ -1,16 +1,36 @@
 [project]
-name = "changelens"
-version = "0.1.0"
-description = "Predict what a code change could break: dependency-graph impact analysis served over MCP."
+name = "changelens-mcp"  # "changelens" is taken on PyPI by an unrelated project; the import name and CLI stay changelens
+version = "0.2.0"
+description = "Predict what a Python code change could break and which tests to run: dependency graph + text channel, explainable risk, served over MCP."
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "Pranav Vajpeyi" }]
+keywords = ["mcp", "test-selection", "impact-analysis", "change-impact", "static-analysis", "pytest"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = ["mcp>=2.3,<3"]
+
+[project.urls]
+Repository = "https://github.com/pranav797/changelens"
+Benchmark = "https://github.com/pranav797/changelens/blob/master/docs/benchmark.md"
 
 [project.scripts]
 changelens = "changelens.cli:main"
 
 [dependency-groups]
 dev = ["pytest", "pytest-cov"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [".claude"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["changelens"]
 
 [build-system]
 requires = ["hatchling"]
