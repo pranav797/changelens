@@ -284,3 +284,11 @@ def test_coverage_ranking(repo):
     assert {"tests/test_more.py::test_calls_add", "tests/test_api.py::test_run"} == set(covered)
     coverage.clear(repo)
     assert "covered" not in server.find_related_tests(str(repo), symbol="pkg.core.add")["tests"][0]
+
+
+def test_duck_typed_callers_are_affected_files(repo):
+    # checkout() calls gateway.charge() on an untyped parameter: changing Gateway.charge makes checkout.py affected
+    (repo / "pkg/pay.py").write_text("class Gateway:\n    def charge(self, amount):\n        return amount\n")
+    (repo / "pkg/shop.py").write_text("def checkout(gateway, amount):\n    return gateway.charge(amount)\n")
+    files = server.find_affected_files(str(repo), symbol="Gateway.charge")["affected_files"]
+    assert files == [{"file": "pkg/shop.py", "depth": 1, "why": ["pkg.pay.Gateway.charge", "pkg.shop.checkout"], "channel": "duck"}]
