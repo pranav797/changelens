@@ -238,3 +238,16 @@ def test_text_channel(repo):
     tests = server.find_related_tests(str(repo), symbol="pkg.ops.shout")["tests"]
     assert tests == [{"id": "tests/test_ops.py::test_shout", "depth": 3, "why": ["pkg.ops.shout", "tests.test_ops.test_shout"],
                       "channel": "text", "matched": "shout"}]
+
+
+def test_cochange_bench(repo):
+    from changelens.bench import cochange
+
+    # a commit that changes source and an existing test file; the benchmark must predict that test file
+    (repo / "pkg/core.py").write_text(FILES["pkg/core.py"].replace("return a + b", "return b + a"))
+    (repo / "tests/test_api.py").write_text(FILES["tests/test_api.py"] + "\n\ndef test_more():\n    assert run() == 1\n")
+    sh(repo, "commit", "-qam", "change add, extend its test")
+    result = cochange(repo, n=5, log=lambda *a: None)
+    assert [r["modified_tests"] for r in result["records"]] == [["tests/test_api.py"]]
+    assert result["summary"]["changelens-files"]["recall"] == 1.0
+    assert subprocess.run(["git", "worktree", "list"], cwd=repo, capture_output=True, text=True).stdout.count("\n") == 1

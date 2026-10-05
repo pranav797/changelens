@@ -50,12 +50,14 @@ def main(argv=None):
     b.add_argument("-n", type=int, default=30, help="covered mutants to score")
     b.add_argument("--seed", type=int, default=0)
     b.add_argument("--out", help="also write full per-mutant results as JSON here")
+    b.add_argument("--prs", action="store_true",
+                   help="co-change mode: replay recent commits, score predicted test files vs the ones each commit modified")
     args = p.parse_args(argv)
 
     if args.cmd == "bench":
-        from .bench import bench, report
+        from .bench import bench, cochange, report
         try:
-            result = bench(args.repo, args.test_cmd, args.n, args.seed)
+            result = cochange(args.repo, args.n) if args.prs else bench(args.repo, args.test_cmd, args.n, args.seed)
         except ValueError as e:
             sys.exit(f"changelens: {e}")
         if args.out:
