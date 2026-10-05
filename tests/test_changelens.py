@@ -194,7 +194,9 @@ def test_bench(repo):
     assert all(r["failed"] == ["tests/test_api.py::test_run"] for r in result["records"])
     assert result["summary"]["changelens"]["recall"] == 1.0
     assert "| changelens |" in report(result)
-    assert subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout == ""
+    # every tracked file restored (untracked __pycache__ from the pytest runs doesn't count)
+    status = ["git", "status", "--porcelain", "--untracked-files=no"]
+    assert subprocess.run(status, cwd=repo, capture_output=True, text=True).stdout == ""
 
 
 def test_reexport_shadows_submodule(repo):
