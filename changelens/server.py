@@ -53,7 +53,8 @@ def find_affected_files(repo: str, base: str = "HEAD", diff: str = "", symbol: s
 @mcp.tool()
 def find_related_tests(repo: str, base: str = "HEAD", diff: str = "", symbol: str = "",
                        max_depth: int = 4, limit: int = 50) -> dict:
-    """Tests that (transitively) exercise a change, or one `symbol`, as pytest node ids, shallowest first."""
+    """Tests that (transitively) exercise a change, or one `symbol`, as pytest node ids, most likely to fail first
+    (fewest dependency steps, boosted when the test is named after what changed)."""
     index, seeds, dist, _ = _start(repo, base, diff, symbol, max_depth)
     return {"from_symbols": seeds, "tests": tests_for(index, dist)[:limit]}
 

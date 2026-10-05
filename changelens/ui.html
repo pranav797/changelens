@@ -348,7 +348,7 @@ function renderTests(r) {
     try { await navigator.clipboard.writeText(cmd); copy.textContent = "Copied"; } catch { copy.textContent = "Copy failed"; }
     setTimeout(() => copy.textContent = "Copy pytest command", 1500);
   } }, "Copy pytest command");
-  p.replaceChildren(el("div", { class: "toolbar" }, copy, el("span", { class: "muted" }, `${r.tests.length} tests, shallowest first`)),
+  p.replaceChildren(el("div", { class: "toolbar" }, copy, el("span", { class: "muted" }, `${r.tests.length} tests, most likely first`)),
     el("ul", { class: "list" }, r.tests.map(t => chainItem(t.depth, t.id, t.why))));
 }
 

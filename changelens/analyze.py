@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from .index import Index, _bound, git, is_test, module_name
+from .index import Index, _bound, git, is_test, module_name, words
 
 # ponytail: hand-set weights; tune against the benchmark (plan §8)
 W_FAN_IN, FAN_IN_CAP = 35, 20
@@ -14,6 +14,7 @@ W_UNTESTED = 25
 W_INTERFACE = 25
 W_VOLATILITY = 15
 W_BREAKS = 60  # a certain break: high risk on its own
+W_NAME_AFFINITY = 2  # test ranking: one shared word is worth two dependency steps
 HISTORY_COMMITS = 500
 FIX_RE = re.compile(r"\b(fix|fixes|fixed|bug|revert|hotfix|regression)\b", re.I)
 CONFIG_RE = re.compile(r"(\.(toml|ya?ml|ini|cfg|json|env)$|(^|/)(setup\.py|Dockerfile|requirements[^/]*\.txt)$)")
@@ -125,7 +126,20 @@ def tests_for(index, dist):
                 tests[tid] = {"id": tid, "depth": depth, "why": _chain(dist, name)}
     # a file or Test class is redundant once one of its own tests is listed
     parents = {tid.rsplit("::", i)[0] for tid in tests for i in range(1, tid.count("::") + 1)}
-    return sorted((t for t in tests.values() if t["id"] not in parents), key=lambda t: (t["depth"], t["id"]))
+    return sorted((t for t in tests.values() if t["id"] not in parents), key=_rank)
+
+
+def name_affinity(symbol, test_id):
+    """Words a changed symbol shares with a test's id (file, class, function), ignoring the package name:
+    click.core.Command.format_help and tests/test_commands.py::test_help_format share {command, format, help}."""
+    stop = {"test", "tests", symbol.split(".")[0]}
+    return len((set(words(symbol.split(".", 1)[-1])) - stop) & (set(words(test_id.replace(".py", ""))) - stop))
+
+
+def _rank(test):
+    # benchmarked on click (plan §8): depth alone ranks the tests that actually fail poorly once a hub class
+    # pulls in half the suite; a test named after what changed is the strongest tie-breaker (recall@10 44% -> 57%)
+    return test["depth"] - W_NAME_AFFINITY * name_affinity(test["why"][0], test["id"]), test["id"]
 
 
 def volatility(root, files):
