@@ -30,8 +30,8 @@ def _start(repo, base, diff, symbol, max_depth):
         exclude = {index.symbols[seeds[0]].file}
     else:
         index, diff = _change(repo, base, diff)
-        changed_lines, _, seeds, _ = changes(index, diff)
-        exclude = changed_lines
+        change = changes(index, diff)
+        seeds, exclude = change.seeds, change.lines
     return index, seeds, reach(index, seeds, max_depth), exclude
 
 
@@ -66,8 +66,10 @@ def get_dependency_chain(repo: str, symbol: str, max_depth: int = 4, limit: int 
 
     def walk(edges):
         dist = reach(index, [name], max_depth, edges)
+        # import-line nodes are bookkeeping for "this import changed"; the symbols they import are listed instead
         return [{"symbol": s, "file": index.symbols[s].file, "depth": d, "why": _chain(dist, s)}
-                for s, (d, _) in sorted(dist.items(), key=lambda kv: (kv[1][0], kv[0])) if s != name][:limit]
+                for s, (d, _) in sorted(dist.items(), key=lambda kv: (kv[1][0], kv[0]))
+                if s != name and index.symbols[s].kind != "import"][:limit]
 
     return {"symbol": name, "file": index.symbols[name].file,
             "depends_on": walk(index.refs), "dependents": walk(index.dependents)}
@@ -81,7 +83,10 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
 
 @mcp.tool()
 def explain_risk(repo: str, base: str = "HEAD", diff: str = "", max_depth: int = 4) -> dict:
-    """Risk score for a change with the points and reason behind each signal (fan-in, untested, interface, volatility)."""
+    """Risk score for a change: points and reason per signal (fan-in, untested, interface, volatility, breaks).
+
+    `breaks` lists code that still uses a name the diff removed: a certain NameError/ImportError.
+    """
     index, diff = _change(repo, base, diff)
-    changed_lines, deleted, changed, interface = changes(index, diff)
-    return {"changed_symbols": changed, "risk": risk(index, changed_lines, deleted, changed, interface, max_depth)}
+    change = changes(index, diff)
+    return {"changed_symbols": change.symbols, "risk": risk(index, change, max_depth)}

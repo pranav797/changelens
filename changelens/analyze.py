@@ -1,16 +1,19 @@
 """Diff -> changed symbols -> reverse-graph impact -> explainable risk."""
+import ast
 import re
 import subprocess
 from collections import deque
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from .index import Index, git, is_test
+from .index import Index, _bound, git, is_test, module_name
 
 # ponytail: hand-set weights; tune against the benchmark (plan §8)
 W_FAN_IN, FAN_IN_CAP = 35, 20
 W_UNTESTED = 25
 W_INTERFACE = 25
 W_VOLATILITY = 15
+W_BREAKS = 60  # a certain break: high risk on its own
 HISTORY_COMMITS = 500
 FIX_RE = re.compile(r"\b(fix|fixes|fixed|bug|revert|hotfix|regression)\b", re.I)
 CONFIG_RE = re.compile(r"(\.(toml|ya?ml|ini|cfg|json|env)$|(^|/)(setup\.py|Dockerfile|requirements[^/]*\.txt)$)")
@@ -18,12 +21,24 @@ SCHEMA_RE = re.compile(r"(^|/)(migrations?|schemas?|models?)(/|\.py$)")
 
 
 def git_diff(repo=".", base="HEAD") -> str:
+    if base.startswith("-"):  # would be parsed as a git option (e.g. --output=FILE writes a file)
+        raise ValueError(f"base must be a git revision, not an option: {base!r}")
     return git(repo, "diff", base)
 
 
+def _bound_by_line(text):
+    """Names one top-level source line binds (`def f(a):` -> f, `from x import y` -> y); empty if unparsable."""
+    for src in (text, text + " pass"):  # " pass" completes a bare `def f():` / `class C:` header
+        try:
+            return {n for stmt in ast.parse(src).body for n in _bound(stmt)}
+        except SyntaxError:
+            continue
+    return set()
+
+
 def parse_diff(text):
-    """Unified diff -> ({path: changed new-side line numbers}, [deleted paths])."""
-    changed, deleted, path, new, header, pending = {}, [], None, 0, False, None
+    """Unified diff -> ({path: changed new-side lines}, [deleted paths], {path: names on removed top-level lines})."""
+    changed, deleted, removed, path, new, header, pending = {}, [], {}, None, 0, False, None
     for line in text.splitlines() + [""]:
         if pending and not line.startswith(("-", "+")):
             changed[path].add(pending)  # pure deletion: sits between new-1 and new
@@ -50,24 +65,27 @@ def parse_diff(text):
             pending = None  # replacement: the added line already marks the spot
         elif line.startswith("-"):
             pending = max(new - 1, 1)
+            if line[1:2].strip():  # unindented: a module-level statement lost the names it bound
+                removed.setdefault(path, set()).update(_bound_by_line(line[1:]))
         elif line.startswith(" "):
             new += 1
-    return changed, deleted
+    return changed, deleted, removed
 
 
-def _member_edge(src, dst):
-    return src.startswith(dst + ".")  # dst is the class containing src
+def _member_edge(index, src, dst):
+    return src.startswith(dst + ".") and index.symbols[dst].kind == "class"  # dst is the class containing src
 
 
 def reach(index, seeds, max_depth=4, edges=None):
     """0-1 BFS over reverse edges (or `edges`). Member->class edges are free. Returns {symbol: (depth, via)}."""
     edges = index.dependents if edges is None else edges
+    free = edges is index.dependents  # member->class is free only toward dependents
     dist = {s: (0, None) for s in seeds}
     q = deque(seeds)
     while q:
         s = q.popleft()
         for d in sorted(edges.get(s, ())):
-            w = 0 if _member_edge(s, d) else 1
+            w = 0 if free and _member_edge(index, s, d) else 1
             nd = dist[s][0] + w
             if nd <= max_depth and (d not in dist or nd < dist[d][0]):
                 dist[d] = (nd, s)
@@ -85,7 +103,9 @@ def _chain(dist, s):
 def _is_test_item(index, name):
     sym = index.symbols[name]
     last = name.rsplit(".", 1)[-1]
-    return is_test(sym.file) and (sym.kind == "module" or last.startswith(("test", "Test")))
+    # conftest.py is pytest setup, not something to run: its breakage still shows up under risk breaks
+    return (is_test(sym.file) and not sym.file.endswith("conftest.py")
+            and (sym.kind == "module" or last.startswith(("test", "Test"))))
 
 
 def _test_id(index, name):
@@ -122,17 +142,73 @@ def volatility(root, files):
     return touched, fixes
 
 
+@dataclass
+class Change:
+    lines: dict        # file -> changed new-side line numbers
+    deleted: list      # deleted files
+    symbols: list      # symbols the diff edits
+    interface: set     # changed symbols whose public signature changed
+    breaks: dict       # symbol -> {reason: cause}: a certain NameError/ImportError, and the name/module behind it
+
+    @property
+    def seeds(self):
+        """Where impact starts: what was edited, plus what will fail because of it."""
+        return sorted(set(self.symbols) | set(self.breaks))
+
+
 def changes(index, diff):
-    """Diff -> (changed_lines, deleted_files, changed symbols, symbols whose public signature changed)."""
-    changed_lines, deleted = parse_diff(diff)
+    lines, deleted, removed = parse_diff(diff)
     changed, interface = set(), set()
-    for f, lines in changed_lines.items():
-        for line in lines:
-            if sym := index.symbol_at(f, line):
+    for f, nums in lines.items():
+        for line in nums:
+            for sym in index.symbols_at(f, line):
                 changed.add(sym.name)
-                if sym.kind != "module" and sym.public and line <= sym.sig_end:
+                if sym.kind in ("class", "function") and sym.public and line <= sym.sig_end:
                     interface.add(sym.name)
-    return changed_lines, deleted, sorted(changed), interface
+
+    breaks = {}  # symbol -> {reason: cause}, in discovery order so root causes come first
+
+    def broke(syms, reason, cause):
+        for s in sorted(syms & index.symbols.keys()):
+            breaks.setdefault(s, {}).setdefault(reason, cause)
+
+    gone = {}  # dotted name the diff removed at module level (and didn't re-bind) -> root cause
+    for f, names in removed.items():
+        still = {s.name.rsplit(".", 1)[-1] for s in index.by_file.get(f, ())}
+        mod = index.by_file[f][0].name if f in index.by_file else module_name(f)
+        for name in sorted(names - still):
+            gone[f"{mod}.{name}"] = f"{mod}.{name} no longer exists"
+            broke(index.users_of(f, {name}), f"{name} is no longer defined in {f}", f"{mod}.{name}")  # same file
+    gone_mods = {module_name(f): f"{f} was deleted" for f in deleted if f.endswith(".py")}  # module -> root cause
+    while True:  # importers of gone names / failing modules; repeat to follow re-exports and import chains
+        before = len(gone) + len(gone_mods)
+        for mod, aliases in index.aliases.items():
+            if mod not in index.symbols:
+                continue
+            for local, target in sorted(aliases.items(), key=lambda kv: kv[1] not in gone):  # direct causes first
+                if target in gone:
+                    root = reason = gone[target]
+                    cause = target
+                else:  # importing from a failing module (not counting the package this module lives in)
+                    m = next((m for m in gone_mods if (target == m or target.startswith(m + "."))
+                              and not (mod == m or mod.startswith(m + "."))), None)
+                    if m is None:
+                        continue
+                    root, reason, cause = gone_mods[m], f"imports from {m}: {gone_mods[m]}", m
+                binding = f"{mod}.{local}"
+                gone.setdefault(binding, root)  # a re-export of a gone name is gone too
+                if binding in index.symbols and index.symbols[binding].kind == "import":
+                    if mod not in gone_mods:  # a failing top-level import fails the whole module
+                        gone_mods[mod] = root
+                        broke({mod}, reason, cause)
+                else:  # import inside a function: only its users fail
+                    broke(index.users_of(index.symbols[mod].file, {local}), reason, cause)
+        if len(gone) + len(gone_mods) == before:
+            break
+    # a module that fails to import is one entry; the symbols inside it are implied
+    module_of = {s: index.by_file[index.symbols[s].file][0].name for s in breaks}
+    breaks = {s: r for s, r in breaks.items() if s in gone_mods or module_of[s] not in gone_mods}
+    return Change(lines, deleted, sorted(changed), interface, breaks)
 
 
 def affected_files(index, dist, exclude=()):
@@ -145,12 +221,17 @@ def affected_files(index, dist, exclude=()):
     return sorted(files.values(), key=lambda x: (x["depth"], x["file"]))
 
 
-def risk(index, changed_lines, deleted, changed, interface, max_depth=4):
-    code = [s for s in changed if not is_test(index.symbols[s].file)]
+def risk(index, change, max_depth=4):
+    changed, interface = change.symbols, change.interface
+    # unused module-level names (e.g. a freshly added import) can't break anything, and code that will fail
+    # outright is covered by the breaks signal, so neither counts here
+    code = [s for s in changed if not is_test(index.symbols[s].file) and s not in change.breaks
+            and (index.symbols[s].kind not in ("import", "variable") or index.dependents.get(s))]
     fan_in = {d for s in code for d in index.dependents.get(s, ())
-              if d not in changed and not _member_edge(s, d) and not is_test(index.symbols[d].file)}
+              if d not in changed and not _member_edge(index, s, d) and not is_test(index.symbols[d].file)}
     untested = [s for s in code if not tests_for(index, reach(index, [s], max_depth))]
-    touched, fixes = volatility(index.root, set(changed_lines) | set(deleted))
+    touched, fixes = volatility(index.root, set(change.lines) | set(change.deleted))
+    breaks = [f"{s} ({next(iter(r))})" for s, r in change.breaks.items()]
     signals = [
         ("fan-in", len(fan_in), W_FAN_IN * min(len(fan_in), FAN_IN_CAP) / FAN_IN_CAP,
          f"{len(fan_in)} non-test symbols directly reference the change"),
@@ -160,10 +241,13 @@ def risk(index, changed_lines, deleted, changed, interface, max_depth=4):
          f"public signature changed: {', '.join(sorted(interface))}" if interface else "no public signature changed"),
         ("volatility", fixes, W_VOLATILITY * fixes / touched if touched else 0,
          f"{fixes}/{touched} recent commits touching these files were fixes"),
+        ("breaks", len(breaks), W_BREAKS if breaks else 0,
+         f"{len(breaks)} symbols will fail: " + "; ".join(breaks[:3]) + ("; ..." if len(breaks) > 3 else "") if breaks
+         else "no removed name is still referenced"),
     ]
-    score = round(sum(p for _, _, p, _ in signals))
+    score = min(100, round(sum(p for _, _, p, _ in signals)))
 
-    all_files = list(changed_lines) + deleted
+    all_files = list(change.lines) + change.deleted
     types = []
     if all_files and all(is_test(f) for f in all_files):
         types.append("test-only")
@@ -171,6 +255,8 @@ def risk(index, changed_lines, deleted, changed, interface, max_depth=4):
         types.append("config")
     if any(SCHEMA_RE.search(f) for f in all_files):
         types.append("schema")
+    if breaks:
+        types.append("breaking")
     if interface:
         types.append("api")
     if set(code) - interface:
@@ -180,20 +266,22 @@ def risk(index, changed_lines, deleted, changed, interface, max_depth=4):
         "level": "high" if score >= 60 else "medium" if score >= 30 else "low",
         "change_types": types,
         "signals": [{"name": n, "value": v, "points": round(p, 1), "why": w} for n, v, p, w in signals],
+        "breaks": [{"symbol": s, "file": index.symbols[s].file, "reasons": list(r),
+                    "causes": list(dict.fromkeys(r.values()))} for s, r in change.breaks.items()],
     }
 
 
 def analyze(index: Index, diff: str, max_depth=4, limit=50):
-    changed_lines, deleted, changed, interface = changes(index, diff)
-    dist = reach(index, changed, max_depth)
+    change = changes(index, diff)
+    dist = reach(index, change.seeds, max_depth)
     return {
-        "changed_files": sorted(changed_lines),
-        "changed_symbols": changed,
-        "affected_files": affected_files(index, dist, changed_lines)[:limit],
+        "changed_files": sorted(change.lines),
+        "changed_symbols": change.symbols,
+        "affected_files": affected_files(index, dist, change.lines)[:limit],
         "tests": tests_for(index, dist)[:limit],
-        "risk": risk(index, changed_lines, deleted, changed, interface, max_depth),
-        # ponytail: deleted files and non-Python files are reported, not traced
-        "untraced": sorted(deleted + [f for f in changed_lines if PurePosixPath(f).suffix != ".py"]),
+        "risk": risk(index, change, max_depth),
+        # ponytail: non-Python files are reported, not traced (deleted .py files are traced via their importers)
+        "untraced": sorted(f for f in [*change.lines, *change.deleted] if PurePosixPath(f).suffix != ".py"),
     }
 
 
@@ -201,7 +289,13 @@ def risk_markdown(risk):
     out = [f"## ChangeLens: {risk['level'].upper()} risk ({risk['score']}/100)",
            f"Change types: {', '.join(risk['change_types']) or 'none'}", "",
            "| Signal | Points | Why |", "|---|---|---|"]
-    return "\n".join(out + [f"| {s['name']} | {s['points']} | {s['why']} |" for s in risk["signals"]])
+    out += [f"| {s['name']} | {s['points']} | {s['why']} |" for s in risk["signals"]]
+    if risk["breaks"]:
+        out += ["", "### Will break"]
+        out += [f"- `{b['symbol']}` ({b['file']}): {'; '.join(b['reasons'])}" for b in risk["breaks"][:10]]
+        if len(risk["breaks"]) > 10:
+            out.append(f"- ...and {len(risk['breaks']) - 10} more")
+    return "\n".join(out)
 
 
 def to_markdown(r):

@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChangeLens</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5f6b7a; --border: #dde1e6; --hover: #eef1f5;
+  --accent: #3559e0; --accent-text: #ffffff;
+  --high: #c62f2f; --high-bg: #fde8e8; --medium: #a85d00; --medium-bg: #fff0d9; --low: #1d7a46; --low-bg: #e3f4ea;
+  --hop0: #3559e0; --hop1: #5b7cf0; --hop2: #8aa2f5; --hop3: #b5c4f8; --hop4: #d6dffb;
+  --test: #1d7a46; --edge: #a9b2bf;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #1a1e24; --text: #e6e9ee; --muted: #98a2b0; --border: #2c323b; --hover: #232932;
+    --accent: #7d97ff; --accent-text: #0d1117;
+    --high: #ff7b7b; --high-bg: #3a1c1e; --medium: #f2b45a; --medium-bg: #36291a; --low: #5fd08d; --low-bg: #16301f;
+    --hop0: #7d97ff; --hop1: #6680e6; --hop2: #4f68c4; --hop3: #3d529c; --hop4: #2f3f76;
+    --test: #5fd08d; --edge: #4a5462;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+code, .mono { font-family: var(--mono); font-size: 12.5px; }
+button, input, select { font: inherit; color: inherit; }
+
+header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+#repo { color: var(--muted); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-left: auto; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: transparent; padding: 6px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+input[type=text], input[type=number] { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+input[type=text] { width: 230px; font-family: var(--mono); font-size: 12.5px; }
+input[type=number] { width: 64px; }
+.primary { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 8px; padding: 7px 16px; cursor: pointer; font-weight: 600; }
+.primary:disabled { opacity: .6; cursor: progress; }
+label.small { color: var(--muted); font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
+
+#summary { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--border); min-height: 52px; }
+.badge { display: inline-flex; gap: 8px; align-items: baseline; padding: 4px 12px; border-radius: 999px; font-weight: 700; letter-spacing: .3px; }
+.badge.high { background: var(--high-bg); color: var(--high); }
+.badge.medium { background: var(--medium-bg); color: var(--medium); }
+.badge.low { background: var(--low-bg); color: var(--low); }
+.badge small { font-weight: 500; opacity: .85; }
+.chip { border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; font-size: 12px; color: var(--muted); }
+.chip.breaking { border-color: var(--high); color: var(--high); }
+.stat { color: var(--muted); }
+.stat b { color: var(--text); }
+.alert { flex-basis: 100%; background: var(--high-bg); color: var(--high); border-radius: 8px; padding: 8px 12px; }
+.status { color: var(--muted); }
+.error { color: var(--high); }
+
+main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); gap: 16px; padding: 16px 20px; height: calc(100vh - 128px); min-height: 520px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; min-height: 0; display: flex; flex-direction: column; }
+#graphCard { position: relative; overflow: hidden; }
+#graph { flex: 1; min-height: 360px; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.legend span { display: inline-flex; gap: 6px; align-items: center; }
+.sw { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+.sw.sq { border-radius: 3px; }
+#nodeInfo { position: absolute; top: 10px; left: 10px; right: 10px; max-width: 520px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none; }
+#nodeInfo .close { float: right; border: 0; background: transparent; cursor: pointer; color: var(--muted); font-size: 16px; line-height: 1; }
+.empty { margin: auto; color: var(--muted); text-align: center; padding: 24px; max-width: 360px; }
+
+[role=tablist] { display: flex; border-bottom: 1px solid var(--border); padding: 0 8px; overflow-x: auto; }
+[role=tab] { border: 0; background: transparent; padding: 10px 12px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }
+[role=tab][aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+[role=tabpanel] { overflow: auto; padding: 12px 14px; flex: 1; }
+h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 14px 0 6px; }
+h3:first-child { margin-top: 2px; }
+ul.list { list-style: none; margin: 0; padding: 0; }
+ul.list li { border-bottom: 1px solid var(--border); }
+details summary { cursor: pointer; padding: 7px 4px; display: flex; gap: 8px; align-items: center; list-style: none; }
+details summary::-webkit-details-marker { display: none; }
+details summary:hover, .hist:hover { background: var(--hover); }
+details[open] summary { font-weight: 600; }
+.depth { font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; flex: none; }
+.name { overflow-wrap: anywhere; }
+ol.chain { margin: 2px 0 10px 4px; padding-left: 18px; color: var(--muted); }
+ol.chain li { border: 0; font-family: var(--mono); font-size: 12px; padding: 1px 0; overflow-wrap: anywhere; }
+ol.chain li:last-child { color: var(--text); }
+.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.ghost { background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+table { width: 100%; border-collapse: collapse; }
+td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.bar { height: 6px; background: var(--hover); border-radius: 3px; min-width: 60px; }
+.bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.hist { width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border); background: transparent; padding: 8px 4px; cursor: pointer; display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; }
+.hist .when { color: var(--muted); font-size: 12px; grid-column: 1 / -1; }
+.muted { color: var(--muted); }
+
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; height: auto; }
+  #graph { min-height: 420px; }
+  [role=tabpanel] { max-height: none; }
+  form { margin-left: 0; }
+  input[type=text] { width: 100%; flex: 1 1 200px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>ChangeLens</h1>
+  <span id="repo"></span>
+  <form id="form">
+    <span class="seg" role="group" aria-label="What to analyze">
+      <button type="button" data-mode="change" aria-pressed="true">Change</button>
+      <button type="button" data-mode="symbol" aria-pressed="false">Symbol</button>
+    </span>
+    <input id="target" type="text" aria-label="Base revision" placeholder="HEAD" value="HEAD">
+    <label class="small">depth <input id="depth" type="number" min="1" max="8" value="4"></label>
+    <button class="primary" id="go" type="submit">Analyze</button>
+  </form>
+</header>
+
+<section id="summary" aria-live="polite"><span class="status">Analyze your working tree against a base revision, or explore one symbol.</span></section>
+
+<main>
+  <section class="card" id="graphCard" aria-label="Impact graph">
+    <div id="graph"><p class="empty">The impact graph appears here: the change at the centre, each ring one dependency step further out. Click a node to see how it was reached.</p></div>
+    <div id="nodeInfo" role="dialog" aria-label="Node details"></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--hop0)"></i>changed</span>
+      <span><i class="sw" style="background:var(--hop2)"></i>affected (fainter = further)</span>
+      <span><i class="sw sq" style="background:var(--test)"></i>test</span>
+      <span><i class="sw" style="border:3px solid var(--high)"></i>will break</span>
+      <span><i class="sw" style="border:2px dashed var(--high)"></i>removed</span>
+    </div>
+  </section>
+
+  <section class="card" aria-label="Details">
+    <div role="tablist">
+      <button role="tab" aria-selected="true" aria-controls="p-impact" id="t-impact">Impact</button>
+      <button role="tab" aria-selected="false" aria-controls="p-tests" id="t-tests">Tests</button>
+      <button role="tab" aria-selected="false" aria-controls="p-risk" id="t-risk">Risk</button>
+      <button role="tab" aria-selected="false" aria-controls="p-history" id="t-history">History</button>
+    </div>
+    <div role="tabpanel" id="p-impact" aria-labelledby="t-impact"></div>
+    <div role="tabpanel" id="p-tests" aria-labelledby="t-tests" hidden></div>
+    <div role="tabpanel" id="p-risk" aria-labelledby="t-risk" hidden></div>
+    <div role="tabpanel" id="p-history" aria-labelledby="t-history" hidden></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let mode = "change", cy = null, nodePaths = new Map();
+
+// Build DOM without innerHTML: every string from the repo is untrusted text.
+function el(tag, props = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (k === "style") n.style.cssText = v;
+    else n.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid instanceof Node ? kid : String(kid));
+  return n;
+}
+const fill = (node, ...kids) => node.replaceChildren(...kids.flat().filter(k => k != null && k !== false));
+const short = name => name.split(".").slice(-2).join(".");
+const cssVar = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+async function api(path, body) {
+  const res = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+// ---- controls
+document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+function setMode(m, value) {
+  mode = m;
+  document.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
+  const t = $("#target");
+  t.placeholder = m === "change" ? "HEAD  (or origin/main...HEAD)" : "Symbol, e.g. Cart.total";
+  t.setAttribute("aria-label", m === "change" ? "Base revision" : "Symbol");
+  t.value = value ?? (m === "change" ? "HEAD" : "");
+  if (value === undefined) t.focus();
+}
+document.querySelectorAll("[role=tab]").forEach(t => t.addEventListener("click", () => showTab(t.id.slice(2))));
+function showTab(name) {
+  document.querySelectorAll("[role=tab]").forEach(t => t.setAttribute("aria-selected", String(t.id === "t-" + name)));
+  document.querySelectorAll("[role=tabpanel]").forEach(p => p.hidden = p.id !== "p-" + name);
+}
+
+$("#form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const value = $("#target").value.trim();
+  const q = { depth: Number($("#depth").value) || 4 };
+  if (mode === "symbol") { if (!value) return $("#target").focus(); q.symbol = value; } else q.base = value || "HEAD";
+  $("#go").disabled = true;
+  $("#summary").replaceChildren(el("span", { class: "status" }, "Indexing and analyzing…"));
+  try { render(await api("/api/analyze", q)); loadHistory(); }
+  catch (err) { $("#summary").replaceChildren(el("span", { class: "error" }, err.message)); }
+  finally { $("#go").disabled = false; }
+});
+
+// ---- rendering
+function render(record) {
+  const r = record.result, q = record.query;
+  setMode(q.symbol ? "symbol" : "change", q.symbol || q.base || "HEAD");
+  $("#depth").value = q.depth || 4;
+  renderSummary(r, q);
+  renderGraph(r);
+  renderImpact(r);
+  renderTests(r);
+  renderRisk(r);
+}
+
+function renderSummary(r, q) {
+  const kids = [];
+  if (r.risk) {
+    kids.push(el("span", { class: "badge " + r.risk.level }, r.risk.level.toUpperCase(), el("small", {}, `${r.risk.score}/100`)));
+    r.risk.change_types.forEach(t => kids.push(el("span", { class: "chip " + t }, t)));
+  } else {
+    kids.push(el("span", { class: "chip" }, "symbol"), el("code", {}, r.changed_symbols[0]));
+  }
+  kids.push(el("span", { class: "stat" }, el("b", {}, r.changed_symbols.length), q.symbol ? " start" : " changed symbols"),
+            el("span", { class: "stat" }, el("b", {}, r.affected_files.length), " affected files"),
+            el("span", { class: "stat" }, el("b", {}, r.tests.length), " tests"));
+  const breaks = r.risk?.breaks || [];
+  if (breaks.length) kids.push(el("div", { class: "alert", role: "alert" },
+    el("b", {}, `Will break: ${breaks.length} ${breaks.length === 1 ? "symbol/module" : "symbols/modules"}. `),
+    `${breaks[0].symbol}: ${breaks[0].reasons[0]}`, breaks.length > 1 ? " (see Risk tab)" : ""));
+  if (!q.symbol && !r.changed_symbols.length)
+    kids.push(el("span", { class: "status" }, r.changed_files.length ? "Only non-Python files changed." : `No changes against ${q.base || "HEAD"}.`));
+  $("#summary").replaceChildren(...kids);
+}
+
+function graphElements(r) {
+  const hop = new Map(), edges = new Map();
+  nodePaths = new Map();
+  const add = chain => chain.forEach((s, i) => {
+    if (!hop.has(s) || i < hop.get(s)) { hop.set(s, i); nodePaths.set(s, chain.slice(0, i + 1)); }
+    if (i) edges.set(chain[i - 1] + "→" + s, [chain[i - 1], s]);
+  });
+  const breaks = r.risk?.breaks || [];
+  const cause = new Map(breaks.map(b => [b.symbol, b.causes[0]]));
+  const breakChain = s => {
+    const c = [s];
+    while (cause.has(c[0]) && !c.includes(cause.get(c[0])) && c.length < 20) c.unshift(cause.get(c[0]));
+    return c;
+  };
+  breaks.forEach(b => add(breakChain(b.symbol)));  // first, so each break's cause sits nearer the centre
+  r.changed_symbols.filter(s => !cause.has(s)).forEach(s => add([s]));
+  r.affected_files.forEach(a => add(a.why));
+  r.tests.forEach(t => add(t.why));
+  const tests = new Set(r.tests.map(t => t.why.at(-1)));
+  const broken = new Set(breaks.map(b => b.symbol));
+  const removed = new Set([...cause.values()].filter(c => !cause.has(c) && !r.changed_symbols.includes(c)));
+  const nodes = [...hop].map(([id, h]) => ({ data: { id, label: short(id), hop: Math.min(h, 4) },
+    classes: [tests.has(id) && "test", broken.has(id) && "broken", removed.has(id) && "removed", h === 0 && "root"]
+      .filter(Boolean).join(" ") }));
+  return [...nodes, ...[...edges.values()].map(([source, target]) => ({ data: { source, target } }))];
+}
+
+function renderGraph(r) {
+  $("#nodeInfo").style.display = "none";
+  if (cy) { cy.destroy(); cy = null; }
+  const box = $("#graph");
+  box.replaceChildren();
+  if (!window.cytoscape) return box.append(el("p", { class: "empty" }, "The graph needs Cytoscape.js from cdnjs, which didn't load (offline?). The lists on the right still work."));
+  const elements = graphElements(r);
+  if (!elements.length) return box.append(el("p", { class: "empty" }, "Nothing to draw: no changed Python symbols."));
+  cy = cytoscape({
+    container: box, elements, wheelSensitivity: 0.25, minZoom: 0.15, maxZoom: 3,
+    style: [
+      { selector: "node", style: { "background-color": n => cssVar("--hop" + n.data("hop")), label: "data(label)", color: cssVar("--text"),
+          "font-size": 10, "text-valign": "bottom", "text-margin-y": 4, width: 18, height: 18, "text-wrap": "ellipsis", "text-max-width": 140 } },
+      { selector: "node.root", style: { width: 28, height: 28, "font-weight": "bold", "font-size": 11 } },
+      { selector: "node.test", style: { shape: "round-rectangle", "background-color": cssVar("--test"), width: 16, height: 16 } },
+      { selector: "node.broken", style: { "border-width": 4, "border-color": cssVar("--high") } },
+      { selector: "node.removed", style: { "background-opacity": 0, "border-width": 2, "border-style": "dashed",
+          "border-color": cssVar("--high"), label: n => n.data("label") + " (removed)" } },
+      { selector: "edge", style: { width: 1.2, "line-color": cssVar("--edge"), "target-arrow-color": cssVar("--edge"), "target-arrow-shape": "triangle", "arrow-scale": .7, "curve-style": "bezier" } },
+      { selector: ".faded", style: { opacity: .15 } },
+      { selector: "node:selected", style: { "border-width": 3, "border-color": cssVar("--accent") } },
+    ],
+    // rings by hop: the change at the centre, each further step one ring out
+    layout: { name: "concentric", concentric: n => 10 - n.data("hop"), levelWidth: () => 1, minNodeSpacing: 70,
+              spacingFactor: 1.15, animate: false },
+  });
+  if (cy.zoom() > 1.3) { cy.zoom(1.3); cy.center(); }  // small graphs: don't blow the labels up
+  cy.on("tap", "node", e => focusNode(e.target.id()));
+  cy.on("tap", e => { if (e.target === cy) clearFocus(); });
+}
+
+function focusNode(id) {
+  if (!cy) return;
+  const node = cy.getElementById(id);
+  if (!node.length) return;
+  const path = nodePaths.get(id) || [id];
+  const keep = cy.collection(path.map(p => cy.getElementById(p)));
+  keep.merge(keep.edgesWith(keep));
+  cy.elements().addClass("faded");
+  keep.removeClass("faded");
+  cy.elements().unselect(); node.select();
+  cy.animate({ center: { eles: node }, duration: 250 });
+  const info = $("#nodeInfo");
+  info.replaceChildren(
+    el("button", { class: "close", "aria-label": "Close", onclick: clearFocus }, "×"),
+    el("div", {}, el("code", {}, id)),
+    el("div", { class: "muted", style: "margin-top:4px" }, path.length > 1 ? `reached via:` : "changed directly"),
+    path.length > 1 ? el("ol", { class: "chain" }, path.map(p => el("li", {}, p))) : null);
+  info.style.display = "block";
+}
+function clearFocus() {
+  if (cy) { cy.elements().removeClass("faded"); cy.elements().unselect(); }
+  $("#nodeInfo").style.display = "none";
+}
+
+function chainItem(depth, title, why) {
+  return el("li", {}, el("details", {},
+    el("summary", { onclick: () => focusNode(why.at(-1)) }, el("span", { class: "depth", title: "depth" }, "d" + depth), el("span", { class: "name mono" }, title)),
+    el("ol", { class: "chain" }, why.map(s => el("li", {}, s)))));
+}
+
+function renderImpact(r) {
+  const p = $("#p-impact");
+  const breaks = r.risk?.breaks || [];
+  fill(p,
+    breaks.length ? [el("h3", { style: "color:var(--high)" }, `Will break (${breaks.length})`), el("ul", { class: "list" }, breaks.map(b =>
+      el("li", {}, el("details", {}, el("summary", { onclick: () => focusNode(b.symbol) }, el("span", { class: "name mono" }, b.symbol)),
+        el("ol", { class: "chain" }, b.reasons.map(x => el("li", {}, x)))))))] : null,
+    el("h3", {}, r.risk ? `Changed symbols (${r.changed_symbols.length})` : "Starting symbol"),
+    r.changed_symbols.length ? el("ul", { class: "list" }, r.changed_symbols.map(s =>
+      el("li", {}, el("details", {}, el("summary", { onclick: () => focusNode(s) }, el("span", { class: "depth" }, "d0"), el("span", { class: "name mono" }, s)))))) : el("p", { class: "muted" }, "None."),
+    el("h3", {}, `Affected files (${r.affected_files.length})`),
+    r.affected_files.length ? el("ul", { class: "list" }, r.affected_files.map(a => chainItem(a.depth, a.file, a.why))) : el("p", { class: "muted" }, "No other files depend on this."),
+    r.untraced?.length ? [el("h3", {}, "Not traced"), el("ul", { class: "list" }, r.untraced.map(f => el("li", { class: "mono", style: "padding:6px 4px" }, f)))] : null);
+}
+
+function renderTests(r) {
+  const p = $("#p-tests");
+  if (!r.tests.length) return p.replaceChildren(el("p", { class: "muted" }, "No tests reach this change."));
+  const cmd = "pytest " + r.tests.map(t => JSON.stringify(t.id)).join(" ");
+  const copy = el("button", { class: "ghost", onclick: async () => {
+    try { await navigator.clipboard.writeText(cmd); copy.textContent = "Copied"; } catch { copy.textContent = "Copy failed"; }
+    setTimeout(() => copy.textContent = "Copy pytest command", 1500);
+  } }, "Copy pytest command");
+  p.replaceChildren(el("div", { class: "toolbar" }, copy, el("span", { class: "muted" }, `${r.tests.length} tests, shallowest first`)),
+    el("ul", { class: "list" }, r.tests.map(t => chainItem(t.depth, t.id, t.why))));
+}
+
+function renderRisk(r) {
+  const p = $("#p-risk");
+  if (!r.risk) return p.replaceChildren(el("p", { class: "muted" }, "Risk is scored for changes. Switch to Change mode to see it."));
+  const max = { "fan-in": 35, untested: 25, interface: 25, volatility: 15, breaks: 60 };
+  fill(p,
+    el("h3", {}, "Signals"),
+    el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Signal"), el("th", {}, "Points"), el("th", {}, ""), el("th", {}, "Why"))),
+      el("tbody", {}, r.risk.signals.map(s => el("tr", {},
+        el("td", {}, s.name), el("td", {}, s.points),
+        el("td", {}, el("div", { class: "bar" }, el("i", { style: `width:${Math.round(100 * s.points / (max[s.name] || 100))}%` }))),
+        el("td", { class: "muted" }, s.why))))),
+    r.risk.breaks.length ? [el("h3", {}, `Will break (${r.risk.breaks.length})`), el("ul", { class: "list" }, r.risk.breaks.map(b =>
+      el("li", {}, el("details", { open: "" }, el("summary", { onclick: () => focusNode(b.symbol) }, el("span", { class: "name mono" }, b.symbol), el("span", { class: "muted" }, b.file)),
+        el("ol", { class: "chain" }, b.reasons.map(x => el("li", {}, x)))))))] : null);
+}
+
+async function loadHistory() {
+  const p = $("#p-history");
+  try {
+    const { repo, history } = await api("/api/history");
+    $("#repo").textContent = repo;
+    if (!history.length) return p.replaceChildren(el("p", { class: "muted" }, "Past analyses of this repo show up here."));
+    p.replaceChildren(...history.map(h => {
+      const r = h.result, q = h.query;
+      return el("button", { class: "hist", onclick: () => { render(h); showTab("impact"); } },
+        el("span", { class: "when" }, h.time),
+        r.risk ? el("span", { class: "badge " + r.risk.level, style: "padding:0 8px;font-size:11px" }, r.risk.level) : el("span", { class: "chip" }, "symbol"),
+        el("span", { class: "mono name" }, q.symbol || `diff ${q.base || "HEAD"}`),
+        el("span", { class: "muted" }, `${r.tests.length} tests`));
+    }));
+  } catch (err) { p.replaceChildren(el("p", { class: "error" }, err.message)); }
+}
+
+loadHistory();
+</script>
+</body>
+</html>

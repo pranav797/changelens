@@ -70,23 +70,107 @@ def test_symbol_tools(repo):
         server.find_related_tests(str(repo), diff="x", symbol="Calc")
 
 
+def test_module_level_changes(repo):
+    (repo / "pkg/money.py").write_text(
+        "from decimal import ROUND_HALF_UP, Decimal\n\nRATE = 2\n\n\n"
+        "def r(x):\n    return Decimal(x).quantize(1, ROUND_HALF_UP) * RATE\n")
+    (repo / "tests/test_money.py").write_text("from pkg.money import r\n\n\ndef test_r():\n    assert r(1) == 2\n")
+    sh(repo, "add", ".")
+    sh(repo, "commit", "-m", "money")
+    money = (repo / "pkg/money.py").read_text()
+
+    # renaming an import leaves r() with a NameError: r must be flagged, and its test found
+    (repo / "pkg/money.py").write_text(money.replace("import ROUND_HALF_UP", "import ROUND_HALF_EVEN"))
+    r = server.analyze_change(str(repo))
+    assert r["changed_symbols"] == ["pkg.money.Decimal", "pkg.money.ROUND_HALF_EVEN"]  # edited; r only breaks
+    assert [t["id"] for t in r["tests"]] == ["tests/test_money.py::test_r"]
+    assert r["risk"]["breaks"] == [{"symbol": "pkg.money.r", "file": "pkg/money.py",
+                                    "reasons": ["ROUND_HALF_UP is no longer defined in pkg/money.py"],
+                                    "causes": ["pkg.money.ROUND_HALF_UP"]}]
+    assert r["risk"]["level"] == "high" and "breaking" in r["risk"]["change_types"]
+
+    # a module constant reaches its users, with the constant at the head of the "why" chain; nothing breaks
+    (repo / "pkg/money.py").write_text(money.replace("RATE = 2", "RATE = 3"))
+    r = server.analyze_change(str(repo))
+    assert r["changed_symbols"] == ["pkg.money.RATE"]
+    assert r["tests"][0]["why"] == ["pkg.money.RATE", "pkg.money.r", "tests.test_money.test_r"]
+    assert r["risk"]["breaks"] == []
+    assert server.get_dependency_chain(str(repo), "RATE")["dependents"][0]["symbol"] == "pkg.money.r"
+
+    # renaming a class another module imports: the importer's import line fails, so does the whole module,
+    # so does whatever imports from that module
+    (repo / "pkg/money.py").write_text(money)
+    core = repo / "pkg/core.py"
+    core.write_text(FILES["pkg/core.py"].replace("class Calc:", "class Calculator:"))
+    breaks = {b["symbol"]: (b["reasons"], b["causes"]) for b in server.explain_risk(str(repo))["risk"]["breaks"]}
+    assert breaks == {"pkg.api": (["pkg.core.Calc no longer exists"], ["pkg.core.Calc"]),
+                      "tests.test_api": (["imports from pkg.api: pkg.core.Calc no longer exists"], ["pkg.api"])}
+
+    # deleting a module breaks whoever imports from it
+    core.write_text(FILES["pkg/core.py"])
+    (repo / "pkg/money.py").unlink()
+    r = server.analyze_change(str(repo))
+    assert r["risk"]["breaks"] == [{"symbol": "tests.test_money", "file": "tests/test_money.py",
+                                    "reasons": ["imports from pkg.money: pkg/money.py was deleted"],
+                                    "causes": ["pkg.money"]}]
+    assert r["tests"] == [{"id": "tests/test_money.py", "depth": 0, "why": ["tests.test_money"]}]
+
+
 def test_parse_diff():
     diff = """diff --git a/x.py b/x.py
 --- a/x.py
 +++ b/x.py
 @@ -3,3 +3,3 @@ def f():
  a
--b
-+c
+-B = 1
++B = 2
  d
 @@ -10,2 +10,1 @@
  e
--f
+-def f(a):
 diff --git a/gone.py b/gone.py
 --- a/gone.py
 +++ /dev/null
 @@ -1 +0,0 @@
 -x
 """
-    changed, deleted = parse_diff(diff)
-    assert changed == {"x.py": {4, 10}} and deleted == ["gone.py"]
+    changed, deleted, removed = parse_diff(diff)
+    assert changed == {"x.py": {4, 10}} and deleted == ["gone.py"] and removed == {"x.py": {"B", "f"}}
+
+
+def test_ui_api(repo):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from changelens.ui import make_server
+
+    httpd = make_server(str(repo), 0)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_port}"
+
+    def post(body, headers=None):
+        headers = {"Content-Type": "application/json", **(headers or {})}
+        req = urllib.request.Request(base + "/api/analyze", json.dumps(body).encode(), headers)
+        return json.load(urllib.request.urlopen(req))
+
+    try:
+        assert b"<title>ChangeLens</title>" in urllib.request.urlopen(base + "/").read()
+        (repo / "pkg/core.py").write_text(FILES["pkg/core.py"].replace("return a + b", "return b + a"))
+        assert post({"base": "HEAD"})["result"]["changed_symbols"] == ["pkg.core.add"]
+        sym = post({"symbol": "Calc.total"})["result"]
+        assert [t["id"] for t in sym["tests"]] == ["tests/test_api.py::test_run"] and sym["risk"] is None
+        history = json.load(urllib.request.urlopen(base + "/api/history"))["history"]
+        assert [h["query"] for h in history] == [{"symbol": "Calc.total"}, {"base": "HEAD"}]  # newest first
+
+        # option injection, non-JSON (cross-site form) posts, and DNS-rebinding hosts are all refused
+        for body, headers, code in [({"base": "--output=pwned"}, None, 400),
+                                    ({"base": "HEAD"}, {"Content-Type": "text/plain"}, 415),
+                                    ({"base": "HEAD"}, {"Host": "evil.example"}, 403)]:
+            with pytest.raises(urllib.error.HTTPError) as err:
+                post(body, headers)
+            assert err.value.code == code
+        assert not (repo / "pwned").exists()
+    finally:
+        httpd.shutdown()
