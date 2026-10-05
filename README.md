@@ -5,8 +5,12 @@ Predict what a code change could break. ChangeLens parses a Python repo into a s
 ## Install
 
 ```bash
-uv sync
+uvx --from changelens-mcp changelens --help     # once published to PyPI ("changelens" is taken there)
+pip install changelens-mcp                     # same, as a regular install
+uv sync                                        # from a clone
 ```
+
+The PyPI distribution is `changelens-mcp`; the command and the Python package are both `changelens`.
 
 ## CLI
 
@@ -30,8 +34,21 @@ Common flags: `--repo PATH`, `--depth N` (default 5), `--limit N`, `--json`. Cha
 1. **Dependency graph.** Calls, imports, re-exports, inheritance and pytest fixtures (parameters, `usefixtures`, autouse, conftest scoping) are traced from the changed symbols up to 5 steps.
 2. **Text channel.** Adds tests whose source names the changed code, or a direct user of it, even inside strings. This catches templates, string-keyed registries and `getattr` dispatch that no graph sees. These are marked `"channel": "text"`.
 3. **Ranking.** Tests with fewer dependency steps come first, and tests named after what changed get a boost.
+4. **Coverage (optional).** If you import one per-test coverage run, tests that actually executed the changed code rank first and are marked `covered`. See below.
 
 Measured on real repos in [docs/benchmark.md](docs/benchmark.md).
+
+## Coverage (optional)
+
+Static analysis finds nearly every test that fails, but it can't tell which of hundreds of candidates *run* the changed code. One coverage run can:
+
+```bash
+uv run changelens coverage --run "python -m pytest"   # needs pytest-cov in that environment
+uv run changelens coverage --file .coverage           # or import one collected with --cov-context=test
+uv run changelens coverage --clear
+```
+
+Coverage is mapped to symbols, not lines, so it stays useful as the code changes; re-import it now and then. On Python 3.12+, `--run` sets `COVERAGE_CORE=ctrace`, because the default `sys.monitoring` core can't record per-test contexts.
 
 ## Web UI
 
@@ -76,6 +93,14 @@ uv run changelens bench --repo path/to/repo --test-cmd ".venv/Scripts/python -m 
 
 This makes one function at a time raise, runs the real test suite, and scores how much of what actually failed ChangeLens predicted, compared with grep and direct-importer baselines. The repo must have no uncommitted changes to tracked files; every mutated file is restored byte for byte.
 
+## Releasing
+
+`.github/workflows/release.yml` builds and publishes on a `v*` tag through PyPI trusted publishing. To enable it, add a trusted publisher on PyPI for project `changelens-mcp`, repo `pranav797/changelens`, workflow `release.yml`, environment `pypi`. Then:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
 ## Performance
 
 The index is cached per file in `.git/changelens/index.json` (JSON, keyed by content). Django (2.9k files, 64k symbols): 13s cold, 2.6s warm.
@@ -86,6 +111,6 @@ Each signal contributes visible points: fan-in, untested, interface change, vola
 
 ## Known limits
 
-- Static analysis plus a text match can't see everything. Duck-typed calls on untyped objects (`gateway.charge()`) don't make the caller an *affected file*, and dynamic imports aren't followed.
+- Static analysis plus a text match can't see everything. Duck-typed calls (`gateway.charge()` on an untyped parameter) are matched by method name and listed as affected files (`"channel": "duck"`), but they don't feed test prediction (benchmarked: no recall gain). Dynamic imports aren't followed.
 - Non-Python files are listed as "not traced".
 - Recall drops for chains longer than the depth limit (`--depth`).
