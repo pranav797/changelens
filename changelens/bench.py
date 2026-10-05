@@ -19,7 +19,8 @@ KS = (5, 10)
 
 def norm(test_id):
     """Node id at test-function level: forward slashes, no parametrize suffix."""
-    return re.sub(r"\[.*\]$", "", test_id.strip().replace("\\", "/"))
+    # cut at the first "[": parametrize ids can contain spaces, which also cut the summary line short
+    return re.sub(r"\[.*$", "", test_id.strip().replace("\\", "/"))
 
 
 def _split(cmd):
