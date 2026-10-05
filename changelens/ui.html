@@ -132,6 +132,7 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
       <span><i class="sw sq" style="background:var(--test)"></i>test</span>
       <span><i class="sw" style="border:3px solid var(--high)"></i>will break</span>
       <span><i class="sw" style="border:2px dashed var(--high)"></i>removed</span>
+      <span><i style="display:inline-block;width:16px;border-top:2px dashed var(--edge)"></i>named in test source</span>
     </div>
   </section>
 
@@ -151,7 +152,7 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
 
 <script>
 const $ = s => document.querySelector(s);
-let mode = "change", cy = null, nodePaths = new Map();
+let mode = "change", cy = null, nodePaths = new Map(), textNodes = new Set();
 
 // Build DOM without innerHTML: every string from the repo is untrusted text.
 function el(tag, props = {}, ...kids) {
@@ -240,6 +241,7 @@ function renderSummary(r, q) {
 function graphElements(r) {
   const hop = new Map(), edges = new Map();
   nodePaths = new Map();
+  textNodes = new Set(r.tests.filter(t => t.channel === "text").map(t => t.why.at(-1)));
   const add = chain => chain.forEach((s, i) => {
     if (!hop.has(s) || i < hop.get(s)) { hop.set(s, i); nodePaths.set(s, chain.slice(0, i + 1)); }
     if (i) edges.set(chain[i - 1] + "→" + s, [chain[i - 1], s]);
@@ -254,14 +256,20 @@ function graphElements(r) {
   breaks.forEach(b => add(breakChain(b.symbol)));  // first, so each break's cause sits nearer the centre
   r.changed_symbols.filter(s => !cause.has(s)).forEach(s => add([s]));
   r.affected_files.forEach(a => add(a.why));
-  r.tests.forEach(t => add(t.why));
+  r.tests.forEach(t => {
+    if (t.channel !== "text") return add(t.why);
+    const [root, test] = t.why;  // a text match is not a dependency step: dashed edge, placed at its rank depth
+    add([root]);
+    if (!hop.has(test)) { hop.set(test, t.depth); nodePaths.set(test, t.why); }
+    edges.set(root + "→" + test, [root, test, "text"]);
+  });
   const tests = new Set(r.tests.map(t => t.why.at(-1)));
   const broken = new Set(breaks.map(b => b.symbol));
   const removed = new Set([...cause.values()].filter(c => !cause.has(c) && !r.changed_symbols.includes(c)));
   const nodes = [...hop].map(([id, h]) => ({ data: { id, label: short(id), hop: Math.min(h, 4) },
     classes: [tests.has(id) && "test", broken.has(id) && "broken", removed.has(id) && "removed", h === 0 && "root"]
       .filter(Boolean).join(" ") }));
-  return [...nodes, ...[...edges.values()].map(([source, target]) => ({ data: { source, target } }))];
+  return [...nodes, ...[...edges.values()].map(([source, target, cls]) => ({ data: { source, target }, classes: cls || "" }))];
 }
 
 function renderGraph(r) {
@@ -283,6 +291,7 @@ function renderGraph(r) {
       { selector: "node.removed", style: { "background-opacity": 0, "border-width": 2, "border-style": "dashed",
           "border-color": cssVar("--high"), label: n => n.data("label") + " (removed)" } },
       { selector: "edge", style: { width: 1.2, "line-color": cssVar("--edge"), "target-arrow-color": cssVar("--edge"), "target-arrow-shape": "triangle", "arrow-scale": .7, "curve-style": "bezier" } },
+      { selector: "edge.text", style: { "line-style": "dashed", "target-arrow-shape": "none" } },
       { selector: ".faded", style: { opacity: .15 } },
       { selector: "node:selected", style: { "border-width": 3, "border-color": cssVar("--accent") } },
     ],
@@ -310,7 +319,8 @@ function focusNode(id) {
   info.replaceChildren(
     el("button", { class: "close", "aria-label": "Close", onclick: clearFocus }, "×"),
     el("div", {}, el("code", {}, id)),
-    el("div", { class: "muted", style: "margin-top:4px" }, path.length > 1 ? `reached via:` : "changed directly"),
+    el("div", { class: "muted", style: "margin-top:4px" }, textNodes.has(id) ? "named in this test's source (not a dependency path):"
+      : path.length > 1 ? "reached via:" : "changed directly"),
     path.length > 1 ? el("ol", { class: "chain" }, path.map(p => el("li", {}, p))) : null);
   info.style.display = "block";
 }
@@ -319,10 +329,11 @@ function clearFocus() {
   $("#nodeInfo").style.display = "none";
 }
 
-function chainItem(depth, title, why) {
+function chainItem(depth, title, why, matched) {
   return el("li", {}, el("details", {},
-    el("summary", { onclick: () => focusNode(why.at(-1)) }, el("span", { class: "depth", title: "depth" }, "d" + depth), el("span", { class: "name mono" }, title)),
-    el("ol", { class: "chain" }, why.map(s => el("li", {}, s)))));
+    el("summary", { onclick: () => focusNode(why.at(-1)) }, el("span", { class: "depth", title: "depth" }, matched ? "text" : "d" + depth), el("span", { class: "name mono" }, title)),
+    matched ? el("p", { class: "muted", style: "margin:2px 0 10px 4px" }, "Not a dependency path: the test's source names ", el("code", {}, matched), ", e.g. in a template, a string-keyed registry or getattr dispatch.")
+            : el("ol", { class: "chain" }, why.map(s => el("li", {}, s)))));
 }
 
 function renderImpact(r) {
@@ -349,7 +360,7 @@ function renderTests(r) {
     setTimeout(() => copy.textContent = "Copy pytest command", 1500);
   } }, "Copy pytest command");
   p.replaceChildren(el("div", { class: "toolbar" }, copy, el("span", { class: "muted" }, `${r.tests.length} tests, most likely first`)),
-    el("ul", { class: "list" }, r.tests.map(t => chainItem(t.depth, t.id, t.why))));
+    el("ul", { class: "list" }, r.tests.map(t => chainItem(t.depth, t.id, t.why, t.matched))));
 }
 
 function renderRisk(r) {
