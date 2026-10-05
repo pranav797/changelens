@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "changelens-ui-playground",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "changelens", "ui", "--repo", "playground", "--no-open", "--port", "8765"],
+      "port": 8765
+    }
+  ]
+}

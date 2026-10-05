@@ -25,6 +25,14 @@ uv run changelens search "proxy auth header"
 
 Common flags: `--repo PATH`, `--depth N` (default 4), `--limit N`, `--json`. Change commands take `--base REF` or `--diff-file F` (`-` for stdin).
 
+## Web UI
+
+```bash
+uv run changelens ui --repo path/to/repo
+```
+
+This opens http://127.0.0.1:8765 with the impact graph (the change at the centre, one ring per dependency step), the impact, tests and risk panels, and a history of past analyses. It can analyze a change against any base, or a single symbol. Use `--port` and `--no-open` to change the port or skip opening a browser.
+
 ## MCP server
 
 ```bash
@@ -35,4 +43,6 @@ Tools: `analyze_change`, `find_affected_files`, `find_related_tests`, `get_depen
 
 ## Known limits (v1)
 
-Static analysis only: duck-typed calls on untyped objects, dynamic imports, and pytest fixtures injected by name aren't traced. Deleted and non-Python files are listed as "not traced". The index is rebuilt in memory on every call.
+Risk includes a **breaks** signal: code that still uses a name the diff removed or renamed, or imports from a deleted or now-failing module, is a certain `NameError`/`ImportError` and makes the change high risk on its own.
+
+Static analysis only: duck-typed calls on untyped objects, dynamic imports, and pytest fixtures injected by name aren't traced. Non-Python files are listed as "not traced". The index is rebuilt in memory on every call.

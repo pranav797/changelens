@@ -35,10 +35,18 @@ def main(argv=None):
         if name != "risk":
             s.add_argument("--limit", type=int, default=10 if name == "search" else 50)
     sub.add_parser("mcp", help="run the MCP server over stdio")
+    u = sub.add_parser("ui", help="open the interactive web UI for a repo")
+    u.add_argument("--repo", default=".")
+    u.add_argument("--port", type=int, default=8765)
+    u.add_argument("--no-open", action="store_true", help="don't open a browser")
     args = p.parse_args(argv)
 
     if args.cmd == "mcp":
         server.mcp.run()
+        return
+    if args.cmd == "ui":
+        from .ui import serve
+        serve(args.repo, args.port, not args.no_open)
         return
 
     tool = COMMANDS[args.cmd][0]

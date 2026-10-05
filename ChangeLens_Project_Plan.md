@@ -84,10 +84,11 @@ Risk severity is a **transparent, explainable score**, not a trained classifier 
 | Untested | share of changed non-test symbols no test reaches | 25 |
 | Interface change | a public `def`/`class` signature line was touched | 25 |
 | Volatility | share of recent commits touching these files that were fixes/reverts | 15 |
+| Breaks a reference | code still uses a module-level name the diff removed or renamed, or imports from a deleted module or one whose import now fails. A certain `NameError`/`ImportError`, listed per symbol or per failing module with its root cause | 60 |
 
-Levels: ≥60 high, ≥30 medium, else low. Weights are hand-set constants, tuned against the benchmark once it exists.
+Levels: ≥60 high, ≥30 medium, else low; the total is capped at 100, so a certain break is always high. Weights are hand-set constants, tuned against the benchmark once it exists.
 
-Change types (labels, not scored): `test-only`, `config`, `schema`, `api`, `logic`.
+Change types (labels, not scored): `test-only`, `config`, `schema`, `breaking`, `api`, `logic`.
 
 ---
 
@@ -113,7 +114,8 @@ Vertical slice first, so every later piece is measured against something that wo
 4. **Benchmark** — the harness in §8, a grep baseline, and the first real numbers. *Do this next: every later decision depends on it.*
 5. **Semantic channel** — embeddings as Channel B; keep it only if recall@k improves.
 6. **GitHub PR bot** — workflow running `changelens analyze --base origin/main...HEAD` and posting/updating one PR comment.
-7. **Hardening** — persisted/incremental index, pytest fixture resolution, deleted-file tracing, docs.
+7. **Hardening** — persisted/incremental index, pytest fixture resolution, docs. (Deleted-file tracing ✅ via the breaks signal.)
+8. **Web UI** ✅ — see §9.
 
 ### 7.1 MCP tools
 
@@ -151,18 +153,18 @@ The original "follow-up fix commit" idea was dropped as primary ground truth: li
 
 ---
 
-## 9. Stretch Goal (Primary) — Interactive Web UI
-
-Once the core engine, MCP server, and benchmark are solid.
+## 9. Interactive Web UI ✅ (was the primary stretch goal)
 
 **Purpose:** an interactive console to explore impact visually, valuable for large changes where a flat list is hard to navigate.
 
-**Would display:**
-- Dependency graph: the changed symbol at the centre, affected modules radiating outward, colour-coded by depth/risk.
-- Ranked impact list with expandable "why" chains (already in the JSON output).
-- Recommended-tests panel and a history of past analyses.
+**Built** (`changelens ui`, in `changelens/ui.py` + `changelens/ui.html`):
+- **Graph:** the change at the centre, one ring per dependency step, with tests, will-break nodes and removed names (dashed "ghost" nodes) styled distinctly. It is drawn from the union of the results' `why` chains plus each break's `causes`, so it needs no extra backend data. Clicking a node fades everything except the chain that reached it.
+- **Panels:** Impact (will-break, changed symbols, affected files with expandable chains), Tests (with a copy-pytest button), Risk (signals with point bars, will-break reasons) and History (past analyses, click to reload).
+- **Modes:** a change (`git diff <base>`) or one symbol.
 
-**Approach:** the CLI already emits JSON, so start with a single static page that loads that JSON and renders it with a graph library (Cytoscape.js / React Flow). Move to Next.js only if the UI grows real routing or state.
+**Approach as built:** a stdlib `http.server` on 127.0.0.1 serving one static page and a JSON API over the same functions as the MCP tools. Cytoscape.js comes from cdnjs; if it fails to load, the lists still work. History is stored per repo in `.git/changelens/history.jsonl`, so it is never committed. Security: POST + JSON only (blocks cross-site form posts), a Host-header check (blocks DNS rebinding), and `base` may not start with `-` (blocks `git diff` option injection, shared with the MCP tools). Next.js only if the UI grows real routing or state.
+
+**Next for the UI:** graph readability on large repos (collapse by file/module, filter by depth) once a real repo shows it's needed.
 
 ### Secondary Stretch Goals
 - Multi-language support (JavaScript/TypeScript via tree-sitter).
