@@ -188,4 +188,4 @@ The original "follow-up fix commit" idea was dropped as primary ground truth: li
 
 ## 11. Résumé Framing
 
-> Built a change-impact engine that fuses static dependency-graph traversal with ML semantic retrieval to predict the blast radius of a code change, served to AI coding agents over MCP; benchmarked with mutation-derived ground truth at X% recall@10 on affected-test prediction vs. a Y% grep baseline.
+> Built a change-impact engine that fuses static dependency-graph traversal with a text-retrieval channel to predict the blast radius of a code change, served to AI coding agents over MCP. Benchmarked with mutation-derived ground truth on click and jinja: 96–100% of actually-failing tests found, and 96–97% of them in the top 10 predicted test files vs. 25–46% for a grep baseline. Embedding models were evaluated and rejected on the same benchmark.
