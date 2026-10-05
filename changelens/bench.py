@@ -92,7 +92,8 @@ def score(pred, truth, all_tests):
     first = next((i + 1 for i, p in enumerate(pred) if any(_covers(p, t) for t in truth)), None)
     run = {t for t in all_tests if any(_covers(p, t) for p in pred)}
     return {
-        **{f"recall@{k}": len(hit(pred[:k])) / len(truth) for k in KS},
+        # top-k can hold at most k failures, so recall@k is out of min(k, failures); a file entry can cover many
+        **{f"recall@{k}": min(1.0, len(hit(pred[:k])) / min(k, len(truth))) for k in KS},
         "recall": len(hit(pred)) / len(truth),
         "first_hit": first,
         "predicted": len(pred),
