@@ -15,6 +15,9 @@ W_INTERFACE = 25
 W_VOLATILITY = 15
 W_BREAKS = 60  # a certain break: high risk on its own
 W_NAME_AFFINITY = 2  # test ranking: one shared word is worth two dependency steps
+TEXT_DEPTH = 3  # text-channel tests rank like a 3-step dependency (benchmarked: plan §8)
+TEXT_MAX_MATCHES = 30  # a name in more test sources than this is too generic to mean anything
+TEXT_PREFIXES = ("do_", "get_", "visit_")  # registry/dispatch naming: do_max is the `max` filter
 HISTORY_COMMITS = 500
 FIX_RE = re.compile(r"\b(fix|fixes|fixed|bug|revert|hotfix|regression)\b", re.I)
 CONFIG_RE = re.compile(r"(\.(toml|ya?ml|ini|cfg|json|env)$|(^|/)(setup\.py|Dockerfile|requirements[^/]*\.txt)$)")
@@ -117,13 +120,48 @@ def _test_id(index, name):
     return sym.file + "::" + name[len(module) + 1:].replace(".", "::")
 
 
+def text_names(index, seeds):
+    """Names a test's source would use to exercise these symbols, even through templates, string-keyed
+    registries or getattr dispatch: each seed's own name and its direct users' names (do_max -> max)."""
+    names = set()
+    for s in seeds:
+        for n in [s, *index.dependents.get(s, ())]:
+            last = n.rsplit(".", 1)[-1]
+            if last.startswith("__") or n in index.fixtures:  # fixture links are already exact in the graph
+                continue
+            last = last.lstrip("_")
+            for prefix in TEXT_PREFIXES:
+                last = last.removeprefix(prefix)
+            if len(last) >= 4:
+                names.add(last)
+    return names
+
+
+def text_matches(index, seeds):
+    """Channel B: test functions whose source names a seed (or a direct user of one), in code or strings."""
+    found = {}
+    for name in text_names(index, seeds):
+        hits = [t for t, tokens in index.test_tokens.items() if name in tokens]
+        if len(hits) <= TEXT_MAX_MATCHES:
+            for t in hits:
+                found.setdefault(t, name)
+    return found
+
+
 def tests_for(index, dist):
     tests = {}
     for name, (depth, _) in dist.items():
         if _is_test_item(index, name):
             tid = _test_id(index, name)
             if tid not in tests or depth < tests[tid]["depth"]:
-                tests[tid] = {"id": tid, "depth": depth, "why": _chain(dist, name)}
+                tests[tid] = {"id": tid, "depth": depth, "why": _chain(dist, name), "channel": "graph"}
+    seeds = [s for s, (depth, _) in dist.items() if depth == 0]
+    for name, matched in text_matches(index, seeds).items():
+        tid = _test_id(index, name)
+        if tid not in tests:
+            root = next((s for s in seeds if matched in (s, *index.dependents.get(s, ()))
+                         or matched in text_names(index, [s])), seeds[0])
+            tests[tid] = {"id": tid, "depth": TEXT_DEPTH, "why": [root, name], "channel": "text", "matched": matched}
     # a file or Test class is redundant once one of its own tests is listed
     parents = {tid.rsplit("::", i)[0] for tid in tests for i in range(1, tid.count("::") + 1)}
     return sorted((t for t in tests.values() if t["id"] not in parents), key=_rank)
@@ -314,7 +352,8 @@ def risk_markdown(risk):
 
 def to_markdown(r):
     out = [risk_markdown(r["risk"]), "", f"### Tests to run ({len(r['tests'])})"]
-    out += [f"- `{t['id']}` (depth {t['depth']}) via {' → '.join(t['why'])}" for t in r["tests"]] or ["- none found"]
+    out += [f"- `{t['id']}` (depth {t['depth']}) via {' → '.join(t['why'])}" if t["channel"] == "graph"
+            else f"- `{t['id']}` (text match: test source names `{t['matched']}`)" for t in r["tests"]] or ["- none found"]
     out += ["", f"### Affected files ({len(r['affected_files'])})"]
     out += [f"- `{a['file']}` (depth {a['depth']}) via {' → '.join(a['why'])}" for a in r["affected_files"]] or ["- none found"]
     if r["untraced"]:
