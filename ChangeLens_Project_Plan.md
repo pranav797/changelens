@@ -71,7 +71,7 @@ The structural channel ships first because it is exact where it applies. Everyth
 - **Shipped: name-affinity ranking.** Tests named after what changed rank higher (click recall@10: 44% → 57%).
 - **Not shipped: embeddings.** A real local embedding model (model2vec `potion-base-8M`) and TF-IDF re-ranking were evaluated on both repos and added only 1–3 points of recall@10, within noise for 40 mutants. A ~30MB model plus new dependencies isn't justified by that, so per this gate they stay out. The evaluation scripts are reproducible from the benchmark JSON.
 - **Not built: a cross-encoder reranker or a change-type classifier.** Ranking gains came from cheaper signals, and change types stay rule-based (no labelled data).
-- **Tried for precision and rejected:** a logistic-regression ranker over 7 features, fitted on benchmark failures, lost 10–11 points of recall@10 on held-out repos; hub pruning collapsed recall. The precision lever that works is **runtime coverage** (optional `changelens coverage`): jinja recall@10 71% → 96%.
+- **Tried for precision and rejected:** a logistic-regression ranker over 7 features, fitted on benchmark failures, lost 10–11 points of recall@10 on held-out repos; hub pruning collapsed recall. The precision lever that works is **runtime coverage** (optional `changelens coverage`): recall@10 jinja 71% → 96%, click 56% → 90%.
 
 All analysis runs locally, so ChangeLens works on private repositories.
 
@@ -191,4 +191,4 @@ The original "follow-up fix commit" idea was dropped as primary ground truth: li
 
 ## 11. Résumé Framing
 
-> Built a change-impact engine that fuses static dependency-graph traversal with a text-retrieval channel to predict the blast radius of a code change, served to AI coding agents over MCP and as a GitHub PR bot. Benchmarked on four open-source repos (two held out from tuning) with mutation-derived ground truth: 96–100% of actually-failing tests found vs. 15–38% for a grep baseline; on real commits, 78–87% of the test files developers touched appear in the top 10 predictions vs. 38–53% for grep. Embedding models and a learned ranker were evaluated and rejected on the same benchmark; optional runtime coverage lifts recall@10 from 71% to 96%.
+> Built a change-impact engine that fuses static dependency-graph traversal with a text-retrieval channel to predict the blast radius of a code change, served to AI coding agents over MCP and as a GitHub PR bot. Benchmarked on four open-source repos (two held out from tuning) with mutation-derived ground truth: 96–100% of actually-failing tests found vs. 15–38% for a grep baseline; on real commits, 78–87% of the test files developers touched appear in the top 10 predictions vs. 38–53% for grep. Embedding models and a learned ranker were evaluated and rejected on the same benchmark; optional runtime coverage lifts recall@10 from 56–71% to 90–96%.

@@ -83,7 +83,7 @@ One pytest-cov run of the unmutated code (`--cov-context=test`), imported with `
 | Recall@10 | static | + coverage |
 |---|---|---|
 | jinja | 71% | **96%** |
-| click | CLICK_STATIC | **CLICK_COV** |
+| click | 56% | **90%** |
 
 Caveat: a "raise on entry" mutant fails every test that runs the function, so coverage is near-exact for this benchmark. Read these as an upper bound for subtler changes, not a typical number.
 
