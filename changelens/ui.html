@@ -329,9 +329,10 @@ function clearFocus() {
   $("#nodeInfo").style.display = "none";
 }
 
-function chainItem(depth, title, why, matched) {
+function chainItem(depth, title, why, matched, covered) {
   return el("li", {}, el("details", {},
-    el("summary", { onclick: () => focusNode(why.at(-1)) }, el("span", { class: "depth", title: "depth" }, matched ? "text" : "d" + depth), el("span", { class: "name mono" }, title)),
+    el("summary", { onclick: () => focusNode(why.at(-1)) }, el("span", { class: "depth", title: "depth" }, matched ? "text" : "d" + depth), el("span", { class: "name mono" }, title),
+      covered ? el("span", { class: "chip", title: "executed the changed code in the last coverage run" }, "ran it") : null),
     matched ? el("p", { class: "muted", style: "margin:2px 0 10px 4px" }, "Not a dependency path: the test's source names ", el("code", {}, matched), ", e.g. in a template, a string-keyed registry or getattr dispatch.")
             : el("ol", { class: "chain" }, why.map(s => el("li", {}, s)))));
 }
@@ -360,7 +361,7 @@ function renderTests(r) {
     setTimeout(() => copy.textContent = "Copy pytest command", 1500);
   } }, "Copy pytest command");
   p.replaceChildren(el("div", { class: "toolbar" }, copy, el("span", { class: "muted" }, `${r.tests.length} tests, most likely first`)),
-    el("ul", { class: "list" }, r.tests.map(t => chainItem(t.depth, t.id, t.why, t.matched))));
+    el("ul", { class: "list" }, r.tests.map(t => chainItem(t.depth, t.id, t.why, t.matched, t.covered))));
 }
 
 function renderRisk(r) {

@@ -1,5 +1,6 @@
 import argparse
 import json
+import sqlite3
 import sys
 
 from . import server
@@ -44,12 +45,18 @@ def main(argv=None):
     u.add_argument("--repo", default=".")
     u.add_argument("--port", type=int, default=8765)
     u.add_argument("--no-open", action="store_true", help="don't open a browser")
+    c = sub.add_parser("coverage", help="import per-test coverage so tests that ran the changed code rank first")
+    c.add_argument("--repo", default=".")
+    c.add_argument("--file", default=".coverage", help="a .coverage file collected with --cov-context=test")
+    c.add_argument("--run", metavar="TEST_CMD", help='collect it first by running this, e.g. "python -m pytest"')
+    c.add_argument("--clear", action="store_true", help="forget imported coverage")
     b = sub.add_parser("bench", help="mutation benchmark: recall of predicted tests vs grep/importer baselines")
     b.add_argument("--repo", default=".")
     b.add_argument("--test-cmd", default="python -m pytest", help="how to run the repo's tests (pytest)")
     b.add_argument("-n", type=int, default=30, help="covered mutants to score")
     b.add_argument("--seed", type=int, default=0)
     b.add_argument("--out", help="also write full per-mutant results as JSON here")
+    b.add_argument("--cov", action="store_true", help="also score ChangeLens with per-test coverage (needs pytest-cov)")
     b.add_argument("--prs", action="store_true",
                    help="co-change mode: replay recent commits, score predicted test files vs the ones each commit modified")
     args = p.parse_args(argv)
@@ -57,13 +64,29 @@ def main(argv=None):
     if args.cmd == "bench":
         from .bench import bench, cochange, report
         try:
-            result = cochange(args.repo, args.n) if args.prs else bench(args.repo, args.test_cmd, args.n, args.seed)
+            result = (cochange(args.repo, args.n) if args.prs
+                      else bench(args.repo, args.test_cmd, args.n, args.seed, use_coverage=args.cov))
         except ValueError as e:
             sys.exit(f"changelens: {e}")
         if args.out:
             with open(args.out, "w", encoding="utf-8") as fh:
                 json.dump(result, fh, indent=2)
         print(report(result))
+        return
+    if args.cmd == "coverage":
+        from . import coverage
+        from .index import Index
+        index = Index(args.repo)
+        if args.clear:
+            coverage.clear(index.root)
+            print("coverage cleared")
+            return
+        try:
+            path = coverage.collect(index.root, args.run) if args.run else index.root / args.file
+            data = coverage.import_coverage(index, path)
+        except (ValueError, OSError, sqlite3.Error) as e:
+            sys.exit(f"changelens: {e}")
+        print(f"imported coverage of {data['tests']} tests over {len(data['symbols'])} symbols (at {data['commit'][:10]})")
         return
     if args.cmd == "mcp":
         server.mcp.run()
