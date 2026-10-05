@@ -62,15 +62,17 @@ The differentiator vs. "an AI code reviewer": ChangeLens fuses **structural depe
 
 ---
 
-## 4. ML Layer (gated by the benchmark)
+## 4. Channel B and the ML Layer (gated by the benchmark) ✅
 
-The structural channel ships first because it is exact where it applies. ML components are added **only when the benchmark shows a recall gap the graph cannot close** (dynamic dispatch, duck typing, pytest fixtures injected by name, string-based registries).
+The structural channel ships first because it is exact where it applies. Everything else had to earn its place on the benchmark (§8). What it showed:
 
-- **Feature Extraction / Sentence Similarity** — a local code-embedding model (sentence-transformers) embeds each symbol; the changed symbols' nearest neighbours become Channel B. Vectors are stored as float32 blobs and searched by brute-force cosine in numpy — fine up to ~100k symbols, no vector DB needed.
-- **Text Ranking** — a cross-encoder reranker, only if the merged list's precision@k is the bottleneck.
-- **Change-type classification** — rules first (path and AST based). A learned classifier is only worth it if labelled data appears and the rules measurably misfire.
+- **Gaps the graph can't close:** on jinja, 15% of mutants got *zero* hits. The tests reach the code through template strings (`"{{ loop.changed(x) }}"`), string-keyed registries (the `max` filter is `do_max`) and `getattr` dispatch (`visit_*`). Pytest fixtures were the other blind spot; they are now resolved exactly in the graph (§7, hardening).
+- **Shipped: a text channel.** It adds test functions whose source (strings included) names a changed symbol or a direct user of it (`do_`/`get_`/`visit_` prefixes stripped; names in more than 30 tests skipped as too generic). These tests are ranked like a 3-step dependency and marked `"channel": "text"`. On jinja, recall went from 83% to 93% and "any hit" from 85% to 98%, for about one extra prediction per change. On click there was no effect.
+- **Shipped: name-affinity ranking.** Tests named after what changed rank higher (click recall@10: 44% → 57%).
+- **Not shipped: embeddings.** A real local embedding model (model2vec `potion-base-8M`) and TF-IDF re-ranking were evaluated on both repos and added only 1–3 points of recall@10, within noise for 40 mutants. A ~30MB model plus new dependencies isn't justified by that, so per this gate they stay out. The evaluation scripts are reproducible from the benchmark JSON.
+- **Not built: a cross-encoder reranker or a change-type classifier.** Ranking gains came from cheaper signals, and change types stay rule-based (no labelled data).
 
-All inference runs locally, so ChangeLens works on private repositories.
+All analysis runs locally, so ChangeLens works on private repositories.
 
 ---
 
@@ -96,11 +98,12 @@ Change types (labels, not scored): `test-only`, `config`, `schema`, `breaking`, 
 
 - **Core:** Python 3.11+, stdlib `ast` + the `git` CLI (no tree-sitter or GitPython: for Python-only, `ast` is exact and free).
 - **Interfaces:** `mcp` 2.x (`MCPServer`), argparse CLI, GitHub Actions.
-- **Later, if the benchmark justifies it:** sentence-transformers, a cross-encoder, numpy, SQLite for a persisted index.
+- **Index cache:** per-file JSON facts in `.git/changelens/index.json` (not SQLite, not pickle: JSON can't execute code on load).
+- **Evaluated and rejected by the benchmark:** embedding models and TF-IDF re-ranking (§4).
 
 **Multi-language path:** tree-sitter replaces `ast` behind the same `Symbol` + reference-graph shape. It is deferred until a second language is actually in scope.
 
-*Intentionally lean.* v1 rebuilds the index in memory on each call (seconds for a typical repo). Persistence and incremental re-indexing get added when a real repo shows the rebuild is too slow.
+*Intentionally lean.* Persistence was added when a real repo showed the need: Django (2.9k files) took 64s per index. Profiling showed only ~4s of that was parsing; the rest was four separate AST walks. One pass per file plus the cache brought it to 13s cold and 2.6s warm.
 
 ---
 
@@ -109,12 +112,12 @@ Change types (labels, not scored): `test-only`, `config`, `schema`, `breaking`, 
 Vertical slice first, so every later piece is measured against something that works.
 
 1. **Structural slice** ✅ — ast indexer, reference graph, diff → changed symbols → reverse BFS, affected files/tests with "why" chains.
-2. **Risk scorer** ✅ — the four signals plus change-type rules.
+2. **Risk scorer** ✅ — five signals (incl. breaks) plus change-type rules.
 3. **Interfaces** ✅ — MCP server and CLI exposing all six tools (§7.1).
-4. **Benchmark** — the harness in §8, a grep baseline, and the first real numbers. *Do this next: every later decision depends on it.*
-5. **Semantic channel** — embeddings as Channel B; keep it only if recall@k improves.
-6. **GitHub PR bot** — workflow running `changelens analyze --base origin/main...HEAD` and posting/updating one PR comment.
-7. **Hardening** — persisted/incremental index, pytest fixture resolution, docs. (Deleted-file tracing ✅ via the breaks signal.)
+4. **Benchmark** ✅ — `changelens bench`: mutation ground truth, grep and importer baselines, results in [docs/benchmark.md](docs/benchmark.md).
+5. **Semantic channel** ✅ — text channel and name-affinity ranking shipped; embeddings evaluated and rejected (§4).
+6. **GitHub PR bot** ✅ — composite `action.yml` (job summary, one updated PR comment, `fail-on` gate) and a dogfood workflow.
+7. **Hardening** ✅ — per-file index cache, pytest fixture resolution, scoped function-level imports, docs. Deleted-file tracing via the breaks signal.
 8. **Web UI** ✅ — see §9.
 
 ### 7.1 MCP tools
@@ -123,7 +126,7 @@ Vertical slice first, so every later piece is measured against something that wo
 |---|---|---|---|
 | `analyze_change` | change | full report: changed symbols, affected files, tests, risk, untraced files | `analyze` |
 | `find_affected_files` | change **or** `symbol` | non-test files that depend on it, starting files excluded | `files` |
-| `find_related_tests` | change **or** `symbol` | pytest node ids, shallowest first | `tests` |
+| `find_related_tests` | change **or** `symbol` | pytest node ids, most likely to fail first | `tests` |
 | `get_dependency_chain` | `symbol` | `depends_on` (forward) and `dependents` (reverse) | `deps` |
 | `search_codebase` | `query` | symbols ranked by words in name, module path, docstring | `search` |
 | `explain_risk` | change | score, level, change types, and points + reason per signal | `risk` |
@@ -132,8 +135,8 @@ Consistency rules, enforced by a test:
 - A *change* is always `diff` text, else `git diff <base>` (default `HEAD`). Passing both `symbol` and `diff` is an error, not a silent choice.
 - `find_affected_files`, `find_related_tests` and `explain_risk` on a change return exactly the matching slice of `analyze_change`, because `analyze_change` is assembled from the same functions.
 - Every tool resolves symbols through one lookup: a qualified name or unique dotted suffix. Ambiguous or unknown names raise an error listing the candidates.
-- Every result entry carries `depth` and `why` (the dependency chain), and `max_depth` / `limit` mean the same thing in every tool.
-- `search_codebase` is lexical for now. The semantic channel (§4) replaces its internals without changing its signature.
+- Every result entry carries `depth` and `why` (the dependency chain); test entries also carry `channel` (`graph` or `text`). `max_depth` (default 5) and `limit` mean the same thing in every tool.
+- `search_codebase` is lexical; embeddings were evaluated and didn't earn a place (§4).
 
 ---
 
@@ -148,8 +151,10 @@ Two ground-truth sources, both mechanical (no hand-labelling):
 
 The original "follow-up fix commit" idea was dropped as primary ground truth: linking a fix commit to the change that caused it is unreliable and would make the numbers easy to challenge.
 
-- **Metrics:** recall@k and precision@k on affected tests, plus mean rank of the first true hit.
-- **Baselines:** (a) `git grep` for changed symbol names, (b) direct importers only. Report the lift from each channel separately.
+- **Metrics:** recall@k (out of min(k, failures), since a top-10 list can't hold 300 failures), overall recall, any-hit rate, precision, and the share of the suite you'd have to run.
+- **Baselines:** (a) `git grep` for the changed function's name in test files, (b) test files that directly import the changed module.
+
+**As built:** `changelens bench` (mutation ground truth). PR co-change ground truth is not built yet. Methodology, results, and every finding that changed the code are in [docs/benchmark.md](docs/benchmark.md).
 
 ---
 
@@ -176,7 +181,7 @@ The original "follow-up fix commit" idea was dropped as primary ground truth: li
 
 - **Scope creep** — Mitigation: the benchmark gates every addition.
 - **Dependency resolution accuracy** — dynamic imports, duck typing and pytest fixtures are invisible to static analysis. Mitigation: measure recall honestly; that gap is exactly what the semantic channel has to earn its place by closing.
-- **Over-reach in large repos** — transitive BFS can flag half the codebase. Mitigation: depth limit (default 4), depth-ranked output, and precision@k in the benchmark.
+- **Over-reach in large repos** — realised: on click and jinja the graph reaches 50–60% of the suite, because hub classes connect everything. Mitigation: ranking (depth + name affinity) puts the likely failures first, and agents see the top `limit` (50). Depth 5 was chosen from a measured recall/breadth trade-off (§8).
 - **Benchmark credibility** — Mitigation: mechanical ground truth, published methodology, honest baselines.
 
 ---
