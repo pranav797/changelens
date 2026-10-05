@@ -216,8 +216,11 @@ def changes(index, diff):
         for line in nums:
             for sym in index.symbols_at(f, line):
                 changed.add(sym.name)
-                if sym.kind in ("class", "function") and sym.public and line <= sym.sig_end:
+                if sym.kind in ("class", "function") and sym.public and line <= sym.sig_end and not is_test(f):
                     interface.add(sym.name)
+    # a symbol the diff added whole is new: no existing caller can depend on its signature
+    interface = {s for s in interface
+                 if not set(range(index.symbols[s].start, index.symbols[s].end + 1)) <= lines[index.symbols[s].file]}
 
     breaks = {}  # symbol -> {reason: cause}, in discovery order so root causes come first
 
