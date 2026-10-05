@@ -7,8 +7,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 
 from . import server
-from .analyze import DEFAULT_DEPTH, affected_files, tests_for
-from .index import git, state_dir
+from .analyze import DEFAULT_DEPTH, affected_files, analyze, git_diff, tests_for
+from .index import Index, git, state_dir
 
 HISTORY_SHOWN = 50
 LOCAL_HOSTS = {"127.0.0.1", "localhost"}
@@ -29,13 +29,21 @@ def read_history(repo):
 
 
 def run(repo, q):
-    """One analysis: a change (`base`) or one `symbol`, always in analyze_change's shape."""
+    """One analysis: a change (`base`) or one `symbol`, in analyze_change's shape plus `symbol_files` (for the
+    graph's group-by-file view)."""
     depth, limit = int(q.get("depth", DEFAULT_DEPTH)), int(q.get("limit", 200))
     if q.get("symbol"):
         index, seeds, dist, exclude = server._start(repo, "HEAD", "", q["symbol"], depth)
-        return {"changed_files": [], "changed_symbols": seeds, "affected_files": affected_files(index, dist, exclude)[:limit],
-                "tests": tests_for(index, dist)[:limit], "risk": None, "untraced": []}
-    return server.analyze_change(repo, base=q.get("base") or "HEAD", max_depth=depth, limit=limit)
+        result = {"changed_files": [], "changed_symbols": seeds, "affected_files": affected_files(index, dist, exclude)[:limit],
+                  "tests": tests_for(index, dist)[:limit], "risk": None, "untraced": []}
+    else:
+        index = Index(repo)
+        result = analyze(index, git_diff(index.root, q.get("base") or "HEAD"), depth, limit)
+    named = {*result["changed_symbols"], *(s for e in result["affected_files"] + result["tests"] for s in e["why"])}
+    for b in (result["risk"] or {}).get("breaks", ()):
+        named |= {b["symbol"], *b["causes"]}
+    result["symbol_files"] = {s: index.symbols[s].file for s in named if s in index.symbols}
+    return result
 
 
 class Handler(BaseHTTPRequestHandler):
