@@ -1,0 +1,24 @@
+name: ChangeLens
+on: pull_request
+
+permissions:
+  contents: read
+  pull-requests: write  # post/update the impact comment (fork PRs get a read-only token, so they only get the job summary)
+
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the base branch for the diff, and history for the volatility signal
+      - uses: ./  # this repo's action.yml; elsewhere: uses: <owner>/changelens@<ref>
+        with:
+          fail-on: breaks
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv run pytest -q
