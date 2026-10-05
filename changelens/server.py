@@ -9,7 +9,7 @@ Conventions shared by every tool:
 """
 from mcp.server.mcpserver import MCPServer
 
-from .analyze import _chain, affected_files, analyze, changes, git_diff, reach, risk, tests_for
+from .analyze import DEFAULT_DEPTH, _chain, affected_files, analyze, changes, git_diff, reach, risk, tests_for
 from .index import Index
 
 mcp = MCPServer("changelens")
@@ -36,7 +36,7 @@ def _start(repo, base, diff, symbol, max_depth):
 
 
 @mcp.tool()
-def analyze_change(repo: str, base: str = "HEAD", diff: str = "", max_depth: int = 4, limit: int = 50) -> dict:
+def analyze_change(repo: str, base: str = "HEAD", diff: str = "", max_depth: int = DEFAULT_DEPTH, limit: int = 50) -> dict:
     """Full impact report for a change: changed symbols, affected files, tests to run, and explainable risk."""
     index, diff = _change(repo, base, diff)
     return analyze(index, diff, max_depth, limit)
@@ -44,7 +44,7 @@ def analyze_change(repo: str, base: str = "HEAD", diff: str = "", max_depth: int
 
 @mcp.tool()
 def find_affected_files(repo: str, base: str = "HEAD", diff: str = "", symbol: str = "",
-                        max_depth: int = 4, limit: int = 50) -> dict:
+                        max_depth: int = DEFAULT_DEPTH, limit: int = 50) -> dict:
     """Non-test files that (transitively) depend on a change, or on one `symbol`. The starting files are excluded."""
     index, seeds, dist, exclude = _start(repo, base, diff, symbol, max_depth)
     return {"from_symbols": seeds, "affected_files": affected_files(index, dist, exclude)[:limit]}
@@ -52,7 +52,7 @@ def find_affected_files(repo: str, base: str = "HEAD", diff: str = "", symbol: s
 
 @mcp.tool()
 def find_related_tests(repo: str, base: str = "HEAD", diff: str = "", symbol: str = "",
-                       max_depth: int = 4, limit: int = 50) -> dict:
+                       max_depth: int = DEFAULT_DEPTH, limit: int = 50) -> dict:
     """Tests that (transitively) exercise a change, or one `symbol`, as pytest node ids, most likely to fail first
     (fewest dependency steps, boosted when the test is named after what changed)."""
     index, seeds, dist, _ = _start(repo, base, diff, symbol, max_depth)
@@ -60,7 +60,7 @@ def find_related_tests(repo: str, base: str = "HEAD", diff: str = "", symbol: st
 
 
 @mcp.tool()
-def get_dependency_chain(repo: str, symbol: str, max_depth: int = 4, limit: int = 50) -> dict:
+def get_dependency_chain(repo: str, symbol: str, max_depth: int = DEFAULT_DEPTH, limit: int = 50) -> dict:
     """Both directions for one symbol: what it depends on, and what depends on it."""
     index = Index(repo)
     name = index.lookup(symbol)
@@ -83,7 +83,7 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
 
 
 @mcp.tool()
-def explain_risk(repo: str, base: str = "HEAD", diff: str = "", max_depth: int = 4) -> dict:
+def explain_risk(repo: str, base: str = "HEAD", diff: str = "", max_depth: int = DEFAULT_DEPTH) -> dict:
     """Risk score for a change: points and reason per signal (fan-in, untested, interface, volatility, breaks).
 
     `breaks` lists code that still uses a name the diff removed: a certain NameError/ImportError.

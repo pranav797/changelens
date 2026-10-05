@@ -14,6 +14,7 @@ W_UNTESTED = 25
 W_INTERFACE = 25
 W_VOLATILITY = 15
 W_BREAKS = 60  # a certain break: high risk on its own
+DEFAULT_DEPTH = 5  # benchmarked: 4 -> 5 lifts recall ~3-4 points for ~7% more of the suite (plan §8)
 W_NAME_AFFINITY = 2  # test ranking: one shared word is worth two dependency steps
 TEXT_DEPTH = 3  # text-channel tests rank like a 3-step dependency (benchmarked: plan §8)
 TEXT_MAX_MATCHES = 30  # a name in more test sources than this is too generic to mean anything
@@ -80,7 +81,7 @@ def _member_edge(index, src, dst):
     return src.startswith(dst + ".") and index.symbols[dst].kind == "class"  # dst is the class containing src
 
 
-def reach(index, seeds, max_depth=4, edges=None):
+def reach(index, seeds, max_depth=DEFAULT_DEPTH, edges=None):
     """0-1 BFS over reverse edges (or `edges`). Member->class edges are free. Returns {symbol: (depth, via)}."""
     edges = index.dependents if edges is None else edges
     free = edges is index.dependents  # member->class is free only toward dependents
@@ -273,7 +274,7 @@ def affected_files(index, dist, exclude=()):
     return sorted(files.values(), key=lambda x: (x["depth"], x["file"]))
 
 
-def risk(index, change, max_depth=4):
+def risk(index, change, max_depth=DEFAULT_DEPTH):
     changed, interface = change.symbols, change.interface
     # unused module-level names (e.g. a freshly added import) can't break anything, and code that will fail
     # outright is covered by the breaks signal, so neither counts here
@@ -323,7 +324,7 @@ def risk(index, change, max_depth=4):
     }
 
 
-def analyze(index: Index, diff: str, max_depth=4, limit=50):
+def analyze(index: Index, diff: str, max_depth=DEFAULT_DEPTH, limit=50):
     change = changes(index, diff)
     dist = reach(index, change.seeds, max_depth)
     return {

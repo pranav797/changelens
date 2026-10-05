@@ -3,7 +3,7 @@ import json
 import sys
 
 from . import server
-from .analyze import risk_markdown, to_markdown
+from .analyze import DEFAULT_DEPTH, risk_markdown, to_markdown
 
 FAIL_ON = ("breaks", "high", "medium")
 LEVELS = ("low", "medium", "high")
@@ -34,7 +34,7 @@ def main(argv=None):
         if symbol:
             s.add_argument("--symbol", default="", help="start from this symbol instead of a change")
         if name != "search":
-            s.add_argument("--depth", type=int, default=4)
+            s.add_argument("--depth", type=int, default=DEFAULT_DEPTH)
         if name != "risk":
             s.add_argument("--limit", type=int, default=10 if name == "search" else 50)
         if name in ("analyze", "risk"):

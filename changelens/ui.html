@@ -115,7 +115,7 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
       <button type="button" data-mode="symbol" aria-pressed="false">Symbol</button>
     </span>
     <input id="target" type="text" aria-label="Base revision" placeholder="HEAD" value="HEAD">
-    <label class="small">depth <input id="depth" type="number" min="1" max="8" value="4"></label>
+    <label class="small">depth <input id="depth" type="number" min="1" max="8" value="5"></label>
     <button class="primary" id="go" type="submit">Analyze</button>
   </form>
 </header>
@@ -209,7 +209,7 @@ $("#form").addEventListener("submit", async e => {
 function render(record) {
   const r = record.result, q = record.query;
   setMode(q.symbol ? "symbol" : "change", q.symbol || q.base || "HEAD");
-  $("#depth").value = q.depth || 4;
+  $("#depth").value = q.depth || 5;
   renderSummary(r, q);
   renderGraph(r);
   renderImpact(r);
