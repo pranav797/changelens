@@ -105,6 +105,7 @@ class Index:
         self.aliases = {mod: self._aliases(f, mod, tree) for f, mod, tree in parsed}
         for f, mod, tree in parsed:
             self._link(f, mod)
+        self._link_fixtures()
         for src, targets in self.refs.items():
             for t in targets:
                 self.dependents.setdefault(t, set()).add(src)
@@ -218,6 +219,53 @@ class Index:
                 refs |= {c.name for c in syms if c.name.rsplit(".", 1)[0] == s.name}
             refs.discard(s.name)
             self.refs[s.name] = refs
+
+    def _link_fixtures(self):
+        """pytest injects fixtures by parameter name: link each test/fixture to the fixtures it would receive."""
+        fixtures = {}  # fixture name -> [(symbol, autouse)]
+        for s in self.symbols.values():
+            if s.kind != "function" or not is_test(s.file):
+                continue
+            for d in self._nodes[s.name].decorator_list:
+                call = d if isinstance(d, ast.Call) else None
+                if (_dotted(call.func if call else d) or "").rsplit(".", 1)[-1] != "fixture":
+                    continue
+                kw = {k.arg: k.value for k in call.keywords} if call else {}
+                name = kw["name"].value if isinstance(kw.get("name"), ast.Constant) else s.name.rsplit(".", 1)[-1]
+                autouse = isinstance(kw.get("autouse"), ast.Constant) and kw["autouse"].value is True
+                fixtures.setdefault(name, []).append((s, autouse))
+
+        def scope(fx, file):
+            """How closely fixture fx applies to file: same module beats the nearest conftest.py; None if unseen."""
+            if fx.file == file:
+                return (2, 0)
+            where = PurePosixPath(fx.file)
+            if where.name == "conftest.py":
+                d = where.parent.as_posix()
+                if d == "." or file.startswith(d + "/"):
+                    return (1, len(where.parent.parts))
+            return None
+
+        def usefixtures(node):
+            return [a.value for d in node.decorator_list if isinstance(d, ast.Call)
+                    and (_dotted(d.func) or "").endswith("usefixtures")
+                    for a in d.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+
+        autouse = [fx for found in fixtures.values() for fx, auto in found if auto]
+        for s in list(self.symbols.values()):
+            if s.kind != "function" or not is_test(s.file):
+                continue
+            node = self._nodes[s.name]
+            parent = self._nodes.get(s.name.rsplit(".", 1)[0])
+            a = node.args
+            wanted = [p.arg for p in a.posonlyargs + a.args + a.kwonlyargs if p.arg not in ("self", "cls")]
+            wanted += usefixtures(node) + (usefixtures(parent) if isinstance(parent, ast.ClassDef) else [])
+            for name in wanted:
+                seen = [(sc, fx) for fx, _ in fixtures.get(name, ()) if fx is not s and (sc := scope(fx, s.file))]
+                if seen:
+                    self.refs[s.name].add(max(seen, key=lambda x: x[0])[1].name)
+            if s.name.rsplit(".", 1)[-1].startswith("test"):
+                self.refs[s.name].update(fx.name for fx in autouse if fx is not s and scope(fx, s.file))
 
     def symbols_at(self, file, line):
         """Innermost symbol(s) covering a line; several when one statement binds several names."""
