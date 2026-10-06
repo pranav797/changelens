@@ -2,6 +2,10 @@
 
 **Know what a code change will break before you run the tests.** ChangeLens reads a Python repo, works out which functions a diff touches, and follows the real dependency graph to tell you which files are affected, which tests to run (most likely failures first), and how risky the change is, with the reason for every answer. It works as a CLI, a local web UI, an MCP server for AI coding agents, and a GitHub PR bot.
 
+## Demo
+
+https://github.com/user-attachments/assets/9dbd0740-8f9b-465b-87ce-1969c045d6a8
+
 ## The problem
 
 Every change has a blast radius, and it's rarely obvious.
