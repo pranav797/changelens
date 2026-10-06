@@ -1,16 +1,33 @@
 # ChangeLens
 
-Predict what a code change could break. ChangeLens parses a Python repo into a symbol-level reference graph, maps a diff onto the symbols it touches, and walks the reverse graph to find affected files and the tests to run. Every result comes with the dependency chain that reached it, plus an explainable risk score. See [the project plan](ChangeLens_Project_Plan.md) and [the benchmark](docs/benchmark.md).
+**Know what a code change will break before you run the tests.** ChangeLens reads a Python repo, works out which functions a diff touches, and follows the real dependency graph to tell you which files are affected, which tests to run (most likely failures first), and how risky the change is, with the reason for every answer. It works as a CLI, a local web UI, an MCP server for AI coding agents, and a GitHub PR bot.
 
-## Install
+## The problem
+
+Every change has a blast radius, and it's rarely obvious.
+
+- **Developers guess.** You either run the whole suite (slow), run the tests next to the file you edited (misses the far-away breakage), or grep for the function name, which in our benchmark finds only 15–38% of the tests that actually fail.
+- **AI coding agents guess harder.** An agent only sees the handful of files in its context window. When it edits `round_money`, nothing tells it that checkout, pricing and the cart tests all depend on it, or that renaming an import just broke every module that imports from that package.
+- **Reviewers can't see it either.** A PR diff shows what changed, not what depends on it.
+
+## Why ChangeLens is useful
+
+- **It finds what actually breaks.** On four open-source repos (click, jinja, marshmallow, rich), ChangeLens found **96–100% of the tests that really failed** when a function broke, against 15–38% for grep. On real commits, the top 10 test files it predicts contain 78–87% of the tests developers actually touched.
+- **It explains itself.** Every affected file and test comes with the chain that reached it (`round_money → Cart.subtotal → Cart → test_total`), so you can trust it or overrule it.
+- **It catches certain breaks.** If a diff removes or renames something that other code still uses, ChangeLens reports a certain `NameError`/`ImportError` and which modules fail, before anything runs.
+- **It gives agents ground truth.** Served over MCP, it lets Claude (or any MCP client) ask "what does this change affect?" instead of guessing from a partial view of the repo.
+- **It's local and honest.** Static analysis plus the standard library, nothing sent anywhere. Every design choice was measured against a benchmark, including the ideas that didn't work (embeddings, a learned ranker): see [docs/benchmark.md](docs/benchmark.md).
+
+## Quick start
 
 ```bash
-uvx --from changelens-mcp changelens --help     # once published to PyPI ("changelens" is taken there)
-pip install changelens-mcp                     # same, as a regular install
-uv sync                                        # from a clone
+uv tool install git+https://github.com/pranav797/changelens   # puts `changelens` on your PATH
+cd your-python-repo
+changelens analyze            # what does my uncommitted change affect?
+changelens ui                 # the same, as an interactive graph in your browser
 ```
 
-The PyPI distribution is `changelens-mcp`; the command and the Python package are both `changelens`.
+Or work from a clone: `git clone https://github.com/pranav797/changelens && cd changelens && uv sync`, then prefix commands with `uv run`.
 
 ## CLI
 
@@ -78,7 +95,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }      # base branch + history for the volatility signal
-      - uses: <owner>/changelens@<ref>
+      - uses: pranav797/changelens@master
         with:
           fail-on: breaks             # or high / medium; "" never fails
 ```
@@ -92,14 +109,6 @@ uv run changelens bench --repo path/to/repo --test-cmd ".venv/Scripts/python -m 
 ```
 
 This makes one function at a time raise, runs the real test suite, and scores how much of what actually failed ChangeLens predicted, compared with grep and direct-importer baselines. The repo must have no uncommitted changes to tracked files; every mutated file is restored byte for byte.
-
-## Releasing
-
-`.github/workflows/release.yml` builds and publishes on a `v*` tag through PyPI trusted publishing. To enable it, add a trusted publisher on PyPI for project `changelens-mcp`, repo `pranav797/changelens`, workflow `release.yml`, environment `pypi`. Then:
-
-```bash
-git tag v0.2.0 && git push origin v0.2.0
-```
 
 ## Performance
 
