@@ -121,7 +121,7 @@ Vertical slice first, so every later piece is measured against something that wo
 7. **Hardening** ✅ — per-file index cache, pytest fixture resolution, scoped function-level imports, duck-typed callers as affected files, interface signal ignores new symbols and tests, docs. Deleted-file tracing via the breaks signal.
 8. **Web UI** ✅ — see §9; group-by-file view for large graphs.
 9. **Precision** ✅ — optional per-test coverage ranks tests that ran the changed code first (static-only alternatives measured and rejected, §4).
-10. **Distribution** ✅ — private GitHub repo with the PR bot running on its own PRs; packaged as `changelens-mcp` (the PyPI name `changelens` is taken) with a tag-triggered trusted-publishing release workflow. Publishing itself needs a PyPI account, so it isn't done.
+10. **Distribution** ✅ — public GitHub repo, installable with `uv tool install git+https://github.com/pranav797/changelens`; the PR bot runs on its own PRs. PyPI publishing was considered and deliberately skipped (the name `changelens` is taken there).
 
 ### 7.1 MCP tools
 
