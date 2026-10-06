@@ -1,5 +1,5 @@
 [project]
-name = "changelens-mcp"  # "changelens" is taken on PyPI by an unrelated project; the import name and CLI stay changelens
+name = "changelens"
 version = "0.2.0"
 description = "Predict what a Python code change could break and which tests to run: dependency graph + text channel, explainable risk, served over MCP."
 readme = "README.md"
