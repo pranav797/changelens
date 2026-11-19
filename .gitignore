@@ -5,3 +5,5 @@ __pycache__/
 playground/
 dist/
 .coverage
+
+.claude/
